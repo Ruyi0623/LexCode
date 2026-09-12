@@ -99,16 +99,17 @@ impl Provider for AnthropicProvider {
                     None => break,
                 };
                 pending.extend_from_slice(&chunk);
-                // 增量 UTF-8 解码:不完整的多字节序列留到下一个 chunk
-                let (text, keep) = match std::str::from_utf8(&pending) {
-                    Ok(s) => (s, 0usize),
-                    Err(e) => (std::str::from_utf8(&pending[..e.valid_up_to()]).unwrap_or(""), e.valid_up_to()),
+                // 增量 UTF-8 解码:已解码部分是 pending[..valid_len],
+                // 只有这段交给 SSE 解析;不完整的多字节尾字节(pending[valid_len..])留给下一个 chunk
+                let valid_len = match std::str::from_utf8(&pending) {
+                    Ok(_) => pending.len(),
+                    Err(e) => e.valid_up_to(),
                 };
-                let keep_buf = pending[keep..].to_vec();
+                let text = std::str::from_utf8(&pending[..valid_len]).unwrap_or("");
                 let (events, remainder) = sse::parse(text);
                 // 新 pending = SSE 未终结残余(在已解码文本尾部)+ 不完整 UTF-8 尾字节,顺序不能颠倒
                 let mut new_pending = remainder.into_bytes();
-                new_pending.extend_from_slice(&keep_buf);
+                new_pending.extend_from_slice(&pending[valid_len..]);
                 pending = new_pending;
 
                 for ev in events {
