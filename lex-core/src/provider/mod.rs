@@ -1,3 +1,4 @@
+pub mod anthropic;
 pub mod anthropic_types;
 pub mod sse;
 
@@ -15,7 +16,7 @@ pub struct RequestContext {
     pub messages: Vec<Message>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProviderEvent {
     TextDelta(String),
     ThinkingDelta(String),
@@ -27,7 +28,7 @@ pub enum ProviderEvent {
 
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
-    fn send(&self, ctx: RequestContext) -> Result<StreamResult>;
+    async fn send(&self, ctx: RequestContext) -> Result<StreamResult>;
 }
 
 #[cfg(test)]
