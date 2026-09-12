@@ -1,4 +1,5 @@
 pub mod anthropic_types;
+pub mod sse;
 
 use crate::error::Result;
 use crate::message::{Message, Usage};
