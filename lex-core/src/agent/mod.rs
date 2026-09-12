@@ -52,6 +52,7 @@ impl AgentLoop {
             let mut stream = self.provider.send(ctx).await?;
 
             let mut text_parts: Vec<String> = Vec::new();
+            let mut thinking_parts: Vec<String> = Vec::new();
             let mut tool_uses: Vec<(String, String, serde_json::Value)> = Vec::new(); // (id, name, input)
 
             // BoxStream 是 Pin<Box<_>>,自身 Unpin,可直接 next()
@@ -61,7 +62,10 @@ impl AgentLoop {
                         text_parts.push(t.clone());
                         on_event(&ProviderEvent::TextDelta(t));
                     }
-                    ProviderEvent::ThinkingDelta(t) => on_event(&ProviderEvent::ThinkingDelta(t)),
+                    ProviderEvent::ThinkingDelta(t) => {
+                        thinking_parts.push(t.clone());
+                        on_event(&ProviderEvent::ThinkingDelta(t));
+                    }
                     ProviderEvent::ToolUseStart { id, name } => on_event(&ProviderEvent::ToolUseStart { id, name }),
                     ProviderEvent::ToolUseDelta { id, partial_json } => on_event(&ProviderEvent::ToolUseDelta { id, partial_json }),
                     ProviderEvent::ToolUseComplete { id, name, input } => {
@@ -75,8 +79,12 @@ impl AgentLoop {
             }
 
             if !tool_uses.is_empty() {
-                // assistant 消息:text 块 + tool_use 块都要回填(保持 Thinking 不入库——Anthropic 路径不会产生)
+                // assistant 消息回填:thinking + text + tool_use 都要原样保留,
+                // DeepSeek 兼容端点要求 thinking 历史回传(顺序:thinking 在前)
                 let mut blocks: Vec<Block> = Vec::new();
+                if !thinking_parts.is_empty() {
+                    blocks.push(Block::Thinking { reasoning_content: thinking_parts.join("") });
+                }
                 if !text_parts.is_empty() {
                     blocks.push(Block::Text { text: text_parts.join("") });
                 }
@@ -100,7 +108,12 @@ impl AgentLoop {
 
             state_msg(State::AwaitingInput);
             let final_text = text_parts.join("");
-            self.history.push(Message::assistant(vec![Block::Text { text: final_text.clone() }]));
+            let mut final_blocks: Vec<Block> = Vec::new();
+            if !thinking_parts.is_empty() {
+                final_blocks.push(Block::Thinking { reasoning_content: thinking_parts.join("") });
+            }
+            final_blocks.push(Block::Text { text: final_text.clone() });
+            self.history.push(Message::assistant(final_blocks));
             return Ok(final_text);
         }
     }

@@ -30,6 +30,7 @@ pub struct AnthropicMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicBlock {
     Text { text: String },
+    Thinking { thinking: String, signature: String },
     ToolUse { id: String, name: String, input: serde_json::Value },
     ToolResult {
         tool_use_id: String,
@@ -42,6 +43,12 @@ pub enum AnthropicBlock {
 fn map_block(b: &Block) -> Option<AnthropicBlock> {
     match b {
         Block::Text { text } => Some(AnthropicBlock::Text { text: text.clone() }),
+        // DeepSeek 的 Anthropic 兼容端点要求推理历史把 thinking 块原样回传,
+        // 否则报 "thinking must be passed back";空 signature 可被其接受。
+        Block::Thinking { reasoning_content } => Some(AnthropicBlock::Thinking {
+            thinking: reasoning_content.clone(),
+            signature: String::new(),
+        }),
         Block::ToolUse { id, name, input } => Some(AnthropicBlock::ToolUse {
             id: id.clone(),
             name: name.clone(),
@@ -52,7 +59,6 @@ fn map_block(b: &Block) -> Option<AnthropicBlock> {
             content: content.clone(),
             is_error: *is_error,
         }),
-        Block::Thinking { .. } => None, // Phase 1 不启用 Anthropic 扩展思考,推理块不入 payload
     }
 }
 
@@ -130,13 +136,15 @@ mod tests {
         assert_eq!(req.messages[2].role, "user");
         let s = serde_json::to_string(&req.messages[1].content).unwrap();
         assert!(s.contains(r#""type":"tool_use""#));
-        // Thinking 块不得进入 Anthropic payload(Phase 1 不启用扩展思考)
+        // DeepSeek 兼容端点要求 thinking 原样回传,必须进入 payload
         let ctx2 = RequestContext {
             system: String::new(),
             tools: vec![],
             messages: vec![Message::assistant(vec![Block::Thinking { reasoning_content: "r".into() }])],
         };
         let req2 = build_request(&ctx2, "m", 1);
-        assert!(req2.messages.is_empty(), "纯 Thinking 的 assistant 消息应被整体过滤");
+        assert_eq!(req2.messages.len(), 1);
+        let s2 = serde_json::to_string(&req2.messages[0].content).unwrap();
+        assert_eq!(s2, r#"[{"type":"thinking","thinking":"r","signature":""}]"#);
     }
 }
