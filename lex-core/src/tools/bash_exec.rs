@@ -65,7 +65,7 @@ impl Tool for BashExec {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
-        let mut child = command
+        let child = command
             .spawn()
             .map_err(|e| LexError::Tool(format!("无法启动 shell {}: {e}", shell.command)))?;
         let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait_with_output())
