@@ -1,3 +1,4 @@
+pub mod file_edit;
 pub mod file_read;
 
 use crate::error::Result;
