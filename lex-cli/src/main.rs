@@ -1,3 +1,159 @@
-fn main() {
-    println!("lex-code placeholder");
+mod confirm;
+mod render;
+
+use anyhow::{Context, Result};
+use clap::Parser;
+use lex_core::agent::AgentLoop;
+use lex_core::config::{resolve_api_key, Config};
+use lex_core::prompt::{load_system_prompt, render_template, resolve_system_prompt_path};
+use lex_core::provider::anthropic::AnthropicProvider;
+use lex_core::tools::bash_exec::BashExec;
+use lex_core::tools::file_edit::FileEdit;
+use lex_core::tools::file_read::FileRead;
+use lex_core::tools::{ShellCommand, ToolContext, ToolRegistry};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use tokio::io::AsyncBufReadExt;
+
+#[derive(Parser)]
+#[command(name = "lex-code", version, about = "Lex Code — 终端编程 agent")]
+struct Cli {
+    /// 任务描述(留空进入交互模式)
+    task: Vec<String>,
+    /// 工作目录
+    #[arg(short = 'C', default_value = ".")]
+    cwd: PathBuf,
+}
+
+fn detect_project_type(cwd: &Path) -> String {
+    if cwd.join("Cargo.toml").is_file() {
+        "Rust".into()
+    } else if cwd.join("package.json").is_file() {
+        "Node.js".into()
+    } else if cwd.join("pyproject.toml").is_file() || cwd.join("requirements.txt").is_file() {
+        "Python".into()
+    } else if cwd.join("go.mod").is_file() {
+        "Go".into()
+    } else {
+        "未知".into()
+    }
+}
+
+fn os_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    }
+}
+
+fn build_system_prompt(cfg: &Config, cwd: &Path) -> Result<String> {
+    let path = resolve_system_prompt_path(cwd, cfg.system_prompt_path.as_deref())
+        .context("找不到系统提示词文件(assets/coding-agent-system-prompt.md),可用配置 system_prompt_path 指定")?;
+    let template = load_system_prompt(&path)?;
+    let mut vars: BTreeMap<&str, String> = BTreeMap::new();
+    vars.insert("CWD", cwd.display().to_string());
+    vars.insert("OS", os_name().to_string());
+    vars.insert("PROJECT_TYPE", detect_project_type(cwd));
+    vars.insert("TOOL_TODO", "todo_write".to_string());
+    Ok(render_template(&template, &vars))
+}
+
+fn build_loop(cfg: &Config, cwd: PathBuf) -> Result<AgentLoop> {
+    let api_key = resolve_api_key(&cfg.provider)?;
+    let provider = AnthropicProvider::with_defaults(
+        cfg.anthropic.base_url.clone(),
+        cfg.anthropic.model.clone(),
+        cfg.anthropic.max_tokens,
+        api_key,
+    )?;
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FileRead));
+    registry.register(Box::new(FileEdit));
+    registry.register(Box::new(BashExec));
+
+    let shell: Option<ShellCommand> = cfg.shell.command.clone().map(|command| ShellCommand {
+        command,
+        args: cfg.shell.args.clone().unwrap_or_default(),
+    });
+
+    let system = build_system_prompt(cfg, &cwd)?;
+    Ok(AgentLoop {
+        provider: Box::new(provider),
+        registry,
+        handler: Box::new(confirm::CliConfirmHandler),
+        tool_ctx: ToolContext { cwd, shell },
+        system,
+        history: vec![],
+        max_turns: cfg.max_turns,
+    })
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(e) = run().await {
+        eprintln!("\n错误: {e:#}"); // {:#} 输出完整错误链
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
+    let cli = Cli::parse();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
+    let cwd = std::fs::canonicalize(&cli.cwd).context("工作目录不存在")?;
+    let cfg = Config::load(&cwd)?;
+    let mut agent = build_loop(&cfg, cwd.clone())?;
+
+    if cli.task.is_empty() {
+        interactive_session(&mut agent).await
+    } else {
+        let task = cli.task.join(" ");
+        let text = agent.run_turn(&task, &mut |e| render::render_event(e)).await?;
+        println!("\n{text}");
+        Ok(())
+    }
+}
+
+async fn interactive_session(agent: &mut AgentLoop) -> Result<()> {
+    anstream::println!("Lex Code 交互模式(输入任务,空行取消,Ctrl+C 退出)");
+    let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+    let mut lines = stdin.lines();
+
+    loop {
+        anstream::print!("\n› ");
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+
+        let line = tokio::select! {
+            l = lines.next_line() => l.context("读取输入失败")?,
+            _ = tokio::signal::ctrl_c() => {
+                anstream::println!("\n再见");
+                return Ok(());
+            }
+        };
+
+        let Some(line) = line else {
+            // EOF(如 Ctrl+D / 管道结束):优雅退出
+            anstream::println!("\n再见");
+            return Ok(());
+        };
+        let input = line.trim();
+        if input.is_empty() {
+            continue;
+        }
+        let result = agent.run_turn(input, &mut |e| render::render_event(e)).await;
+        if let Err(e) = result {
+            anstream::println!("\n\x1b[31m本轮失败: {e}\x1b[0m");
+            anstream::println!("(历史已保留,可直接继续描述或纠正)");
+        }
+    }
 }
