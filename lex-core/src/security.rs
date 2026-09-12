@@ -16,6 +16,13 @@ pub trait PermissionHandler: Send + Sync {
     async fn confirm(&self, action: &PendingAction) -> Result<bool>;
 }
 
+#[async_trait]
+impl<T: PermissionHandler + ?Sized> PermissionHandler for std::sync::Arc<T> {
+    async fn confirm(&self, action: &PendingAction) -> Result<bool> {
+        self.as_ref().confirm(action).await
+    }
+}
+
 pub fn describe_call(name: &str, input: &Value) -> String {
     match name {
         "bash_exec" => {
