@@ -1,3 +1,4 @@
+pub mod bash_exec;
 pub mod file_edit;
 pub mod file_read;
 
