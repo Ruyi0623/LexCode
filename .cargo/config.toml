@@ -1,0 +1,4 @@
+# Windows GNU 工具链的 dlltool 无法处理仓库路径中的非 ASCII 字符(D:\项目\...),
+# 将构建产物目录重定向到纯 ASCII 路径以避免 "Can't open def file" 编译错误。
+[build]
+target-dir = "D:/lexcode-target"
