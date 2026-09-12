@@ -13,7 +13,6 @@ use lex_core::tools::file_read::FileRead;
 use lex_core::tools::{ShellCommand, ToolContext, ToolRegistry};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use tokio::io::AsyncBufReadExt;
 
 #[derive(Parser)]
 #[command(name = "lex-code", version, about = "Lex Code — 终端编程 agent")]
@@ -61,7 +60,7 @@ fn build_system_prompt(cfg: &Config, cwd: &Path) -> Result<String> {
     Ok(render_template(&template, &vars))
 }
 
-fn build_loop(cfg: &Config, cwd: PathBuf) -> Result<AgentLoop> {
+fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInput>) -> Result<AgentLoop> {
     let api_key = resolve_api_key(&cfg.provider)?;
     let provider = AnthropicProvider::with_defaults(
         cfg.anthropic.base_url.clone(),
@@ -84,7 +83,7 @@ fn build_loop(cfg: &Config, cwd: PathBuf) -> Result<AgentLoop> {
     Ok(AgentLoop {
         provider: Box::new(provider),
         registry,
-        handler: Box::new(confirm::CliConfirmHandler),
+        handler: Box::new(input),
         tool_ctx: ToolContext { cwd, shell },
         system,
         history: vec![],
@@ -111,10 +110,11 @@ async fn run() -> Result<()> {
 
     let cwd = std::fs::canonicalize(&cli.cwd).context("工作目录不存在")?;
     let cfg = Config::load(&cwd)?;
-    let mut agent = build_loop(&cfg, cwd.clone())?;
+    let input = std::sync::Arc::new(confirm::CliInput::new());
+    let mut agent = build_loop(&cfg, cwd.clone(), input.clone())?;
 
     if cli.task.is_empty() {
-        interactive_session(&mut agent).await
+        interactive_session(&mut agent, &input).await
     } else {
         let task = cli.task.join(" ");
         let text = agent.run_turn(&task, &mut |e| render::render_event(e)).await?;
@@ -123,29 +123,23 @@ async fn run() -> Result<()> {
     }
 }
 
-async fn interactive_session(agent: &mut AgentLoop) -> Result<()> {
+async fn interactive_session(agent: &mut AgentLoop, input: &confirm::CliInput) -> Result<()> {
     anstream::println!("Lex Code 交互模式(输入任务,空行取消,Ctrl+C 退出)");
-    let stdin = tokio::io::BufReader::new(tokio::io::stdin());
-    let mut lines = stdin.lines();
 
     loop {
-        anstream::print!("\n› ");
-        use std::io::Write;
-        std::io::stdout().flush().ok();
-
         let line = tokio::select! {
-            l = lines.next_line() => l.context("读取输入失败")?,
+            l = input.read_line("\n› ") => l.context("读取输入失败")?,
             _ = tokio::signal::ctrl_c() => {
                 anstream::println!("\n再见");
                 return Ok(());
             }
         };
 
-        let Some(line) = line else {
-            // EOF(如 Ctrl+D / 管道结束):优雅退出
+        // EOF(如 Ctrl+D / 管道结束):优雅退出
+        if line.is_empty() {
             anstream::println!("\n再见");
             return Ok(());
-        };
+        }
         let input = line.trim();
         if input.is_empty() {
             continue;
