@@ -1,6 +1,6 @@
 # Lex Code — Agent 指引
 
-类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。当前完成 Phase 1(Anthropic 闭环),Phase 2-5 见下方路线图。
+类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)已真实联调验收;Phase 2(OpenAI 兼容 adapter)代码与测试已完成,**待 DeepSeek Key 真实冒烟**;Phase 3-5 见下方路线图。
 
 ## 必读文档
 
@@ -13,7 +13,7 @@
 
 ```bash
 export PATH="$HOME/.cargo/bin:/d/mingw64/bin:$PATH"   # Git Bash 下通常需要
-cargo test --workspace        # 全部测试(当前 41 个)
+cargo test --workspace        # 全部测试(当前 56 个)
 cargo test -p lex-core        # 仅核心库
 cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-code.exe
 ```
@@ -31,7 +31,7 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 `lex-cli → lex-core`;core 内 `agent → provider/tools/security/context`,反向禁止。
 
 - `lex-core/src/message.rs` — 中立消息模型(`Block::Thinking/ToolUse/ToolResult`),全项目唯一消息表示;adapter 不得丢弃或重排 Thinking 块。
-- `lex-core/src/provider/` — `Provider` trait + `AnthropicAdapter`(SSE 流式)。`sse.rs` 是纯函数增量解析器。**改流式解析必须跑 `tests/sse_replay.rs`**(真实抓包回归,覆盖多种 chunk 切分)。
+- `lex-core/src/provider/` — `Provider` trait + `AnthropicProvider` / `OpenAiCompatProvider`(均 SSE 流式;切换只改配置 `provider = "anthropic"|"openai"`)。`sse.rs` 是纯函数增量解析器。**改流式解析必须跑 `tests/sse_replay.rs` 与 `tests/openai_sse_mock.rs`**(真实抓包/mock 回归,覆盖多种 chunk 切分)。
 - `lex-core/src/tools/` — `Tool` trait + 注册表;`file_read.rs` 的 `require_str`/`resolve_path` 被其他工具复用。
 - `lex-core/src/security.rs` — 权限确认回调。有副作用的工具执行**必须**经过 `execute_tool_call` 内部的权限检查,该路径不可被上层绕过;拒绝/失败降级为 `ToolResult{is_error}` 回填模型,不上抛。
 - `lex-cli/src/` — 渲染与 UI;错误用 anyhow,提示词/交互输出用中文,anstream 输出 ANSI。确认与 REPL **共享同一个** `CliInput`(stdin BufReader 分开会丢预读输入)。
@@ -41,13 +41,13 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 - 非测试代码禁止裸 `unwrap()`/`expect()`(`unwrap_or` 等显式处理允许)。
 - 进入请求 payload 的 serde 结构体:字段顺序 = derive 声明顺序;动态 JSON 用 `Value`/`Vec`,禁止 `HashMap`。
 - 所有 provider HTTP 调用必须流式(SSE 逐事件),禁止攒完整响应。
-- 多轮历史的 tool_result 必须合入**单条 user 消息**;DeepSeek 兼容端点要求 `thinking` 块原样回传(空 signature 可接受)。
+- 多轮历史的 tool_result 必须合入**单条 user 消息**;DeepSeek 兼容端点要求 `thinking` 块原样回传(空 signature 可接受),OpenAI 兼容端点要求 assistant 历史 `reasoning_content` 原样回传(缺失 400)。
 - 路径一律 `PathBuf`;`file_edit` 保留文件原行尾(CRLF/LF);三平台(Linux/Windows/macOS)行为一致,bash_exec 平台默认 Unix `sh -c` / Windows `cmd /C`。
 - Forbidden 级安全规则(删 `.git`、force push、敏感文件外发)用户配置不可静默覆盖。
 
 ## 路线图(后续 Phase)
 
-- Phase 2:抽 Provider 泛化落定 + `OpenAICompatibleAdapter`(tool_calls 数组 + `role:"tool"`;**`reasoning_content` 回传必须有单测**)。
+- ~~Phase 2:抽 Provider 泛化落定 + `OpenAICompatibleAdapter`~~(已完成,待真实冒烟,见 `examples/smoke/README.md` 第 7 节)。
 - Phase 3:`grep_search`(内置 ignore+regex,不调外部 grep)/`todo_write`、三级权限(Forebidden 正则规则表)、只读工具同轮并发。
 - Phase 4:AGENTS.md 注入、token 阈值触发一次压缩、`ImplicitPrefixCacheStrategy`(字节级前缀校验 + `prompt_cache_hit_tokens` 遥测)。
 - Phase 5:错误边界打磨、可观测性、配置文档。
