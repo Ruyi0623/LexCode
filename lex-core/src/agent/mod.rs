@@ -179,6 +179,29 @@ impl AgentLoop {
         }
     }
 
+    /// Ctrl+C 打断后的历史修复:移除尾部悬空的 tool_use(其后无对应 tool_result),
+    /// 保证下轮请求对 Anthropic(工具对完整)与 DeepSeek(reasoning 连续性)都合法。
+    pub fn recover_interrupt(&mut self) {
+        use crate::message::Role;
+        let Some(idx) = self.history.iter().rposition(|m| {
+            m.role == Role::Assistant && m.content.iter().any(|b| matches!(b, Block::ToolUse { .. }))
+        }) else {
+            return;
+        };
+        // 悬空判定:该 assistant 之后没有任何 tool_result
+        if self.history[idx + 1..]
+            .iter()
+            .any(|m| m.content.iter().any(|b| matches!(b, Block::ToolResult { .. })))
+        {
+            return;
+        }
+        let msg = &mut self.history[idx];
+        msg.content.retain(|b| !matches!(b, Block::ToolUse { .. }));
+        if msg.content.is_empty() {
+            self.history.remove(idx);
+        }
+    }
+
     /// 通知订阅者工具执行结果(渲染 ⎿ 结果行);无订阅者时零开销
     fn notify_results(&self, tool_uses: &[(String, String, serde_json::Value)], results: &[(&str, String, bool)]) {
         let Some(hook) = &self.on_tool_result else { return };
@@ -238,6 +261,7 @@ impl AgentLoop {
 #[cfg(test)]
 mod hooks {
     use super::*;
+    use crate::message::Role;
 
     #[test]
     fn first_line_takes_first_line_and_truncates() {
@@ -245,5 +269,107 @@ mod hooks {
         let long: String = "x".repeat(300);
         assert_eq!(first_line_of(&long).chars().count(), 160);
         assert_eq!(first_line_of(""), "");
+    }
+
+    fn bare_loop(history: Vec<Message>) -> AgentLoop {
+        AgentLoop {
+            provider: Box::new(NoopProvider),
+            registry: crate::tools::ToolRegistry::new(),
+            handler: Box::new(NoopHandler),
+            tool_ctx: crate::tools::ToolContext {
+                cwd: std::path::PathBuf::from("."),
+                shell: None,
+                todos: Default::default(),
+            },
+            security: crate::security::SecurityGuard::new(crate::security::SecurityRules::defaults()),
+            system: String::new(),
+            history,
+            max_turns: 5,
+            cache_strategy: None,
+            context_limit: None,
+            pending_summary: None,
+            compress_attempted: false,
+            on_tool_result: None,
+        }
+    }
+
+    struct NoopProvider;
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for NoopProvider {
+        async fn send(&self, _ctx: crate::provider::RequestContext) -> crate::error::Result<crate::provider::StreamResult> {
+            unreachable!("recover_interrupt 测试不触发请求")
+        }
+    }
+    struct NoopHandler;
+    #[async_trait::async_trait]
+    impl crate::security::PermissionHandler for NoopHandler {
+        async fn confirm(&self, _: &crate::security::PendingAction) -> crate::error::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    fn tool_use_msg(name: &str) -> Message {
+        Message::assistant(vec![Block::ToolUse {
+            id: "t1".into(),
+            name: name.into(),
+            input: serde_json::json!({}),
+        }])
+    }
+    fn tool_result_msg(id: &str) -> Message {
+        Message::tool_results(vec![(id, "ok".into(), false)])
+    }
+
+    #[test]
+    fn intact_tail_is_untouched() {
+        let mut l = bare_loop(vec![
+            Message::user_text("hi"),
+            Message::assistant(vec![Block::Text { text: "你好".into() }]),
+        ]);
+        l.recover_interrupt();
+        assert_eq!(l.history.len(), 2);
+    }
+
+    #[test]
+    fn complete_tool_pair_is_untouched() {
+        let mut l = bare_loop(vec![
+            Message::user_text("hi"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "file_read".into(),
+                input: serde_json::json!({}),
+            }]),
+            tool_result_msg("t1"),
+        ]);
+        l.recover_interrupt();
+        assert_eq!(l.history.len(), 3);
+        assert!(matches!(l.history[2].content[0], Block::ToolResult { .. }));
+    }
+
+    #[test]
+    fn dangling_tool_use_stripped_keeps_text() {
+        let mut l = bare_loop(vec![
+            Message::user_text("hi"),
+            Message::assistant(vec![
+                Block::Text { text: "部分回复".into() },
+                Block::ToolUse { id: "t1".into(), name: "bash_exec".into(), input: serde_json::json!({}) },
+            ]),
+        ]);
+        l.recover_interrupt();
+        assert_eq!(l.history.len(), 2);
+        assert_eq!(l.history[1].content.len(), 1);
+        assert!(matches!(l.history[1].content[0], Block::Text { .. }));
+    }
+
+    #[test]
+    fn assistant_with_only_dangling_tool_use_is_removed() {
+        let mut l = bare_loop(vec![
+            Message::user_text("a"),
+            Message::assistant(vec![Block::Text { text: "x".into() }]),
+            Message::user_text("b"),
+            tool_use_msg("bash_exec"),
+        ]);
+        l.recover_interrupt();
+        assert_eq!(l.history.len(), 3);
+        assert_eq!(l.history[2].role, Role::User);
     }
 }
