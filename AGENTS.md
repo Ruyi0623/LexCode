@@ -2,7 +2,7 @@
 
 类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)、Phase 4(AGENTS.md 注入 + 上下文压缩 + 前缀缓存校验/遥测)均已完成并真实联调;Phase 5(错误边界、可观测性、配置文档)已完成,全部阶段收尾,见下方路线图。
 
-目录:`lex-core/src/` 核心库(message / provider / agent / tools / security / context / config / prompt)、`lex-cli/src/` 终端 UI(main / confirm / ui:theme / banner / input / events)、`docs/` 设计文档与需求任务书、`examples/smoke/` 真实联调步骤、`assets/` 运行时系统提示词、`tests/`(位于各 crate)按真实抓包/mock 固化回归。
+目录:`lex-core/src/` 核心库(message / provider / agent / tools / security / context / config / prompt)、`lex-cli/src/` 终端 UI(main / confirm / ui:theme / banner / input / markdown / events)、`docs/` 设计文档与需求任务书、`examples/smoke/` 真实联调步骤、`assets/` 运行时系统提示词、`tests/`(位于各 crate)按真实抓包/mock 固化回归。
 
 ## 必读文档
 
@@ -37,10 +37,11 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 - `lex-core/src/provider/cache.rs` — `CacheStrategy` trait + `ImplicitPrefixCacheStrategy`(前缀缓存一致性校验 + 命中率遥测,两 provider 通用)。**messages 前缀比对必须逐条消息序列化后做列表级比对**——整体 JSON 数组序列化会因结尾 `]` 永远不构成字节前缀。压缩成功必须调用 `invalidate()` 重置基线。
 - `lex-core/src/context/` — AGENTS.md 加载注入(`agents_md.rs`,一次性组装进 system prompt 缓存前缀)、token 估算(字符÷4,只计历史消息)与历史压缩(`compress.rs`,摘要器提示词允许内置)。
 - `lex-core/src/message.rs` — 中立消息模型(`Block::Thinking/ToolUse/ToolResult`),全项目唯一消息表示;adapter 不得丢弃或重排 Thinking 块。
-- `lex-core/src/provider/` — `Provider` trait + `AnthropicProvider` / `OpenAiCompatProvider`(均 SSE 流式;切换只改配置 `provider = "anthropic"|"openai"`)。OpenAI 路径按 DeepSeek 官方文档完整适配:`max_tokens`/`thinking`/`reasoning_effort`/`user_id` 可选透传,Usage 采集 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`(Anthropic 侧映射 `cache_read_input_tokens`);两 provider 共用 `post_stream_with_retry`(429/500/503 自动退避,payload 预序列化保证重试字节一致;错误信息带错误码语义提示)。`sse.rs` 是纯函数增量解析器。**改流式解析必须跑 `tests/sse_replay.rs` 与 `tests/openai_sse_mock.rs`**(真实抓包/mock 回归,覆盖多种 chunk 切分)。
+- `lex-core/src/provider/` — `Provider` trait + `AnthropicProvider` / `OpenAiCompatProvider`(均 SSE 流式;切换只改配置 `provider = "anthropic"|"openai"`)。HTTP 客户端只设 connect_timeout(30s)防连接无界阻塞,**不设读取超时**(SSE 长流不能被总超时截断)。OpenAI 路径按 DeepSeek 官方文档完整适配:`max_tokens`/`thinking`/`reasoning_effort`/`user_id` 可选透传,Usage 采集 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`(Anthropic 侧映射 `cache_read_input_tokens`);两 provider 共用 `post_stream_with_retry`(429/500/503 自动退避,payload 预序列化保证重试字节一致;错误信息带错误码语义提示)。`sse.rs` 是纯函数增量解析器。**改流式解析必须跑 `tests/sse_replay.rs` 与 `tests/openai_sse_mock.rs`**(真实抓包/mock 回归,覆盖多种 chunk 切分)。
+- `lex-core/src/agent/mod.rs` — AgentLoop 状态机;`on_tool_result: Option<ToolResultHook>` 工具结果回调(CLI 渲染 `⎿` 结果行用,无订阅者零开销);`recover_interrupt()` 供 Ctrl+C 打断后调用——清除历史尾部悬空 tool_use(无对应 tool_result),否则下轮请求被两端点 400 拒绝。
 - `lex-core/src/tools/` — `Tool` trait + 注册表;5 个内置工具 file_read/file_edit/bash_exec/grep_search/todo_write;`file_read.rs` 的 `require_str`/`resolve_path` 被其他工具复用;`grep_search` 是内置 ignore+regex 实现(不调外部 grep);只读工具同轮 join_all 并发,混入副作用严格串行(`agent/mod.rs`)。
 - `lex-core/src/security/` — 三级权限(Auto/Confirm/Forbidden)。检查器内置于 `execute_tool_call` 执行路径,上层不可绕过;内置 Forbidden 默认规则(删 .git / force push / rm -rf 高危目标)用户配置**不可静默移除**;敏感文件读取后同轮网络外发命令启发式硬拦截(状态每轮 `reset_turn`)。`[security]` 段三级正则数组只能追加。有副作用的工具执行**必须**经过 `execute_tool_call` 内部的权限检查,该路径不可被上层绕过;拒绝/失败降级为 `ToolResult{is_error}` 回填模型,不上抛。
-- `lex-cli/src/` — 渲染与 UI;错误用 anyhow,提示词/交互输出用中文,anstream 输出 ANSI。确认与 REPL **共享同一个** `CliInput`(stdin BufReader 分开会丢预读输入)。
+- `lex-cli/src/` — 渲染与 UI;错误用 anyhow,提示词/交互输出用中文,anstream 输出 ANSI。确认与 REPL **共享同一个** `CliInput`(stdin BufReader 分开会丢预读输入)。UI 硬约束:所有颜色/ANSI 序列只从 `ui/theme.rs` 取,其他文件禁止裸 `\x1b[`;raw mode 期间换行必须显式 `\r\n`(`\n` 不回车,输入盒边框会错位);流式正文经 `ui/markdown.rs` 行缓冲渲染(粗体/斜体/行内代码/标题/列表/围栏,纯函数有单测,改渲染先跑 `editor_tests`/markdown 测试);提交输入盒 = 折叠(留 `› 回执`),退出 = 整盒清除。
 
 ## 硬性约束(任务书规定,违反即返工)
 
