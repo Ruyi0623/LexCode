@@ -1,6 +1,6 @@
 # Lex Code — Agent 指引
 
-类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)与 Phase 2(OpenAI 兼容 adapter,DeepSeek 端点)均已真实联调验收,Phase 3-5 见下方路线图。
+类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)均已完成并真实联调;Phase 4-5 见下方路线图。
 
 ## 必读文档
 
@@ -13,7 +13,7 @@
 
 ```bash
 export PATH="$HOME/.cargo/bin:/d/mingw64/bin:$PATH"   # Git Bash 下通常需要
-cargo test --workspace        # 全部测试(当前 66 个)
+cargo test --workspace        # 全部测试(当前 92 个)
 cargo test -p lex-core        # 仅核心库
 cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-code.exe
 ```
@@ -32,8 +32,8 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 
 - `lex-core/src/message.rs` — 中立消息模型(`Block::Thinking/ToolUse/ToolResult`),全项目唯一消息表示;adapter 不得丢弃或重排 Thinking 块。
 - `lex-core/src/provider/` — `Provider` trait + `AnthropicProvider` / `OpenAiCompatProvider`(均 SSE 流式;切换只改配置 `provider = "anthropic"|"openai"`)。OpenAI 路径按 DeepSeek 官方文档完整适配:`max_tokens`/`thinking`/`reasoning_effort`/`user_id` 可选透传,Usage 采集 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`(Anthropic 侧映射 `cache_read_input_tokens`);两 provider 共用 `post_stream_with_retry`(429/500/503 自动退避,payload 预序列化保证重试字节一致;错误信息带错误码语义提示)。`sse.rs` 是纯函数增量解析器。**改流式解析必须跑 `tests/sse_replay.rs` 与 `tests/openai_sse_mock.rs`**(真实抓包/mock 回归,覆盖多种 chunk 切分)。
-- `lex-core/src/tools/` — `Tool` trait + 注册表;`file_read.rs` 的 `require_str`/`resolve_path` 被其他工具复用。
-- `lex-core/src/security.rs` — 权限确认回调。有副作用的工具执行**必须**经过 `execute_tool_call` 内部的权限检查,该路径不可被上层绕过;拒绝/失败降级为 `ToolResult{is_error}` 回填模型,不上抛。
+- `lex-core/src/tools/` — `Tool` trait + 注册表;5 个内置工具 file_read/file_edit/bash_exec/grep_search/todo_write;`file_read.rs` 的 `require_str`/`resolve_path` 被其他工具复用;`grep_search` 是内置 ignore+regex 实现(不调外部 grep);只读工具同轮 join_all 并发,混入副作用严格串行(`agent/mod.rs`)。
+- `lex-core/src/security/` — 三级权限(Auto/Confirm/Forbidden)。检查器内置于 `execute_tool_call` 执行路径,上层不可绕过;内置 Forbidden 默认规则(删 .git / force push / rm -rf 高危目标)用户配置**不可静默移除**;敏感文件读取后同轮网络外发命令启发式硬拦截(状态每轮 `reset_turn`)。`[security]` 段三级正则数组只能追加。有副作用的工具执行**必须**经过 `execute_tool_call` 内部的权限检查,该路径不可被上层绕过;拒绝/失败降级为 `ToolResult{is_error}` 回填模型,不上抛。
 - `lex-cli/src/` — 渲染与 UI;错误用 anyhow,提示词/交互输出用中文,anstream 输出 ANSI。确认与 REPL **共享同一个** `CliInput`(stdin BufReader 分开会丢预读输入)。
 
 ## 硬性约束(任务书规定,违反即返工)
@@ -48,7 +48,7 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 ## 路线图(后续 Phase)
 
 - ~~Phase 2:抽 Provider 泛化落定 + `OpenAICompatibleAdapter`~~(已完成并通过 DeepSeek 端点真实冒烟,见 `examples/smoke/README.md` 第 7 节)。
-- Phase 3:`grep_search`(内置 ignore+regex,不调外部 grep)/`todo_write`、三级权限(Forebidden 正则规则表)、只读工具同轮并发。
+- ~~Phase 3:grep_search / todo_write、三级权限、只读并发~~(已完成,见 `examples/smoke/README.md` 第 8 节)。
 - Phase 4:AGENTS.md、压缩触发、`ImplicitPrefixCacheStrategy`(字节级前缀校验 + 命中率遥测;Usage 缓存字段采集与 CLI 渲染已就绪)。
 - Phase 5:错误边界打磨、可观测性、配置文档。
 
