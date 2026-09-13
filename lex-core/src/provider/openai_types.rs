@@ -22,6 +22,9 @@ pub struct OpenAiRequest {
     /// 固定发送 8192 会在思考模式截断思维链
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// DeepSeek user_id:内容安全/KVCache/调度隔离;未配置不发送
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -36,6 +39,7 @@ pub struct OpenAiParams {
     pub max_tokens: Option<u32>,
     pub thinking: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -215,6 +219,7 @@ pub fn build_request(ctx: &RequestContext, model: &str, params: &OpenAiParams) -
         thinking: params.thinking.as_ref().map(|t| ThinkingParam { kind: t.clone() }),
         reasoning_effort: params.reasoning_effort.clone(),
         max_tokens: params.max_tokens,
+        user_id: params.user_id.clone(),
     }
 }
 
@@ -240,18 +245,19 @@ mod tests {
 
     #[test]
     fn deepseek_params_serialize_after_stream_options() {
-        // 文档对齐:thinking 对象 / reasoning_effort / max_tokens 可选透传,
+        // 文档对齐:thinking 对象 / reasoning_effort / max_tokens / user_id 可选透传,
         // 字段顺序固定(前缀缓存确定性)
         let params = OpenAiParams {
             max_tokens: Some(4096),
             thinking: Some("enabled".into()),
             reasoning_effort: Some("high".into()),
+            user_id: Some("team-alice".into()),
         };
         let req = build_request(&ctx_with(vec![Message::user_text("hi")]), "m", &params);
         let s = serde_json::to_string(&req).unwrap();
         assert_eq!(
             s,
-            r#"{"model":"m","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}],"tools":[],"stream":true,"stream_options":{"include_usage":true},"thinking":{"type":"enabled"},"reasoning_effort":"high","max_tokens":4096}"#
+            r#"{"model":"m","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}],"tools":[],"stream":true,"stream_options":{"include_usage":true},"thinking":{"type":"enabled"},"reasoning_effort":"high","max_tokens":4096,"user_id":"team-alice"}"#
         );
     }
 

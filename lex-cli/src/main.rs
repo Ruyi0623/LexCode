@@ -74,6 +74,7 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
                 max_tokens: cfg.openai.max_tokens,
                 thinking: cfg.openai.thinking.clone(),
                 reasoning_effort: cfg.openai.reasoning_effort.clone(),
+                user_id: cfg.openai.user_id.clone(),
             },
             api_key,
         )?),

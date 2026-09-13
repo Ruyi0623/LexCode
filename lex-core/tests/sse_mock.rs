@@ -113,9 +113,39 @@ async fn http_error_status_yields_err() {
         sock.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
     });
     let p = AnthropicProvider::new(http_client(), format!("http://{addr}"), "m".into(), 8, "k".into());
-    let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
-    let items: Vec<_> = stream.collect().await;
-    assert!(items.iter().any(|r| r.is_err()));
+    // POST 阶段的错误在 send() 快速失败(不产生流)
+    let err = match p.send(ctx_with(vec![Message::user_text("hi")])).await {
+        Err(e) => e,
+        Ok(_) => panic!("401 应当失败"),
+    };
+    assert!(err.to_string().contains("401"), "实际: {err}");
     let _ = Duration::from_secs(1); // 保持 import 最小化
     let _ = Block::Text { text: String::new() }; // 保持 message import 使用
+}
+
+#[tokio::test]
+async fn retries_on_503_then_succeeds() {
+    // 可重试错误(429/500/503)自动退避重试,与 OpenAI 路径共用同一 helper
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for (status, body) in [
+            ("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(), String::new()),
+            ("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".to_string(), text_sse("重试成功")),
+        ] {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 || buf[..n].windows(4).any(|w| w == b"\r\n\r\n") { break; }
+            }
+            sock.write_all(status.as_bytes()).await.unwrap();
+            sock.write_all(body.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        }
+    });
+    let p = AnthropicProvider::new(http_client(), format!("http://{addr}"), "m".into(), 8, "k".into());
+    let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
+    let events: Vec<ProviderEvent> = stream.map(|r| r.unwrap()).collect().await;
+    assert!(events.iter().any(|e| matches!(e, ProviderEvent::TextDelta(t) if t == "重试成功")));
 }

@@ -1,6 +1,6 @@
 use super::anthropic_types::{build_request, AnthropicRequest};
 use super::sse;
-use super::{Provider, ProviderEvent, RequestContext, StreamResult};
+use super::{post_stream_with_retry, Provider, ProviderEvent, RequestContext, StreamResult};
 use crate::error::{LexError, Result};
 use crate::message::Usage;
 use futures::StreamExt;
@@ -63,31 +63,29 @@ impl AnthropicProvider {
 impl Provider for AnthropicProvider {
     async fn send(&self, ctx: RequestContext) -> Result<StreamResult> {
         let req: AnthropicRequest = build_request(&ctx, &self.model, self.max_tokens);
+        // 预序列化:每次重试发出的字节完全一致(前缀缓存确定性)
+        let payload = serde_json::to_vec(&req)?;
         let url = self.endpoint();
         let http = self.http.clone();
         let api_key = self.api_key.clone();
 
-        let fut = async move {
-            let resp = http
-                .post(&url)
-                .header("x-api-key", api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION)
-                .json(&req)
-                .send()
-                .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(LexError::Provider(format!("HTTP {status}: {}", truncate_body(&body))));
+        let send = {
+            let http = http.clone();
+            let url = url.clone();
+            let api_key = api_key.clone();
+            move || {
+                http.post(&url)
+                    .header("x-api-key", api_key.clone())
+                    .header("anthropic-version", ANTHROPIC_VERSION)
+                    .header("Content-Type", "application/json")
+                    .body(payload.clone())
+                    .send()
             }
-            Ok(resp.bytes_stream())
         };
+        let resp = post_stream_with_retry(send).await?;
 
         let stream = async_stream::stream! {
-            let mut bytes = match fut.await {
-                Ok(s) => s,
-                Err(e) => { yield Err(e); return; }
-            };
+            let mut bytes = resp.bytes_stream();
             let mut pending: Vec<u8> = Vec::new();
             let mut usage = Usage::default();
             let mut tools: BTreeMap<u64, ToolAcc> = BTreeMap::new();
@@ -209,9 +207,3 @@ impl Provider for AnthropicProvider {
     }
 }
 
-fn truncate_body(s: &str) -> &str {
-    match s.char_indices().nth(500) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
-}

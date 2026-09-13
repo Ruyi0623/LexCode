@@ -35,6 +35,35 @@ fn find_header_end(b: &[u8]) -> bool {
     b.windows(4).any(|w| w == b"\r\n\r\n")
 }
 
+/// 起一个本地 TCP 服务器,对每个连接回一段原始 HTTP 响应;用于模拟 503→重试→200 等序列。
+async fn spawn_raw_server(responses: Vec<String>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for raw in responses {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 || find_header_end(&buf[..n]) { break; }
+            }
+            sock.write_all(raw.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        }
+    });
+    format!("http://{addr}")
+}
+
+fn sse_body(chunks: &[String]) -> String {
+    let mut body: String = chunks.concat();
+    body.push_str("data: [DONE]\n\n");
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
 /// Mock 服务器必须直连:环境若设置 http_proxy,reqwest 默认会把回环请求转发给代理导致偶发 502。
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder().no_proxy().build().unwrap()
@@ -167,8 +196,10 @@ async fn http_error_status_yields_err() {
         sock.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
     });
     let p = OpenAiCompatProvider::new(http_client(), format!("http://{addr}"), "m".into(), OpenAiParams::default(), "k".into());
-    let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
-    let items: Vec<_> = stream.collect().await;
+    let items: Vec<_> = match p.send(ctx_with(vec![Message::user_text("hi")])).await {
+        Err(_) => return, // send() 快速失败即符合预期
+        Ok(stream) => stream.collect().await,
+    };
     assert!(items.iter().any(|r| r.is_err()));
 }
 
@@ -203,4 +234,61 @@ async fn collects_cache_hit_via_openai_style_details() {
         ProviderEvent::Completed { usage } => assert_eq!(usage.cache_hit_tokens, 77),
         other => panic!("期望 Completed,实际 {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn retries_on_503_then_succeeds() {
+    // 文档:500/503/429 为可重试错误;helper 自动退避重试
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n".to_string();
+    let url = spawn_raw_server(vec![
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+        sse_body(&[sse]),
+    ]).await;
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
+    let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
+    let events: Vec<ProviderEvent> = stream.map(|r| r.unwrap()).collect().await;
+    assert!(events.iter().any(|e| matches!(e, ProviderEvent::TextDelta(t) if t == "ok")));
+}
+
+#[tokio::test]
+async fn non_retryable_401_fails_immediately_with_hint() {
+    // 文档:401 认证失败属请求问题,不重试;错误信息带语义提示
+    let url = spawn_raw_server(vec![
+        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+    ]).await;
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
+    // POST 阶段的错误在 send() 快速失败(不产生流)
+    let err = match p.send(ctx_with(vec![Message::user_text("hi")])).await {
+        Err(e) => e,
+        Ok(_) => panic!("401 应当失败"),
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("401") && msg.contains("认证失败"), "实际: {msg}");
+}
+
+#[tokio::test]
+async fn parses_deepseek_error_body_message() {
+    let raw_body = r#"{"error":{"message":"Insufficient Balance","type":"invalid_request_error","code":"402"}}"#;
+    let url = spawn_raw_server(vec![
+        format!("HTTP/1.1 402 Payment Required\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{raw_body}", raw_body.len()),
+    ]).await;
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
+    let err = match p.send(ctx_with(vec![Message::user_text("hi")])).await {
+        Err(e) => e,
+        Ok(_) => panic!("402 应当失败"),
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("余额不足") && msg.contains("Insufficient Balance"), "实际: {msg}");
+}
+
+#[tokio::test]
+async fn keep_alive_comment_lines_are_ignored() {
+    // 文档:流式请求等待期间会周期性下发 SSE 注释 ": keep-alive"
+    let body = ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"好\"},\"finish_reason\":null}]}\n\n: keep-alive\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string();
+    let url = spawn_sse_server(vec![body]).await;
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
+    let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
+    let events: Vec<ProviderEvent> = stream.map(|r| r.unwrap()).collect().await;
+    assert!(events.iter().any(|e| matches!(e, ProviderEvent::TextDelta(t) if t == "好")));
+    assert!(matches!(events.last().unwrap(), ProviderEvent::Completed { .. }));
 }

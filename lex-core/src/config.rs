@@ -33,6 +33,9 @@ pub struct OpenAiConfig {
     pub thinking: Option<String>,
     /// DeepSeek 思考强度:"none" / "low" / "high" / "max";不设置走服务端默认
     pub reasoning_effort: Option<String>,
+    /// DeepSeek user_id:内容安全/KVCache/调度隔离;
+    /// 字符集 [a-zA-Z0-9-_],最长 512,不含隐私信息
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -63,7 +66,14 @@ impl Default for AnthropicConfig {
 
 impl Default for OpenAiConfig {
     fn default() -> Self {
-        OpenAiConfig { base_url: String::new(), model: String::new(), max_tokens: None, thinking: None, reasoning_effort: None }
+        OpenAiConfig {
+            base_url: String::new(),
+            model: String::new(),
+            max_tokens: None,
+            thinking: None,
+            reasoning_effort: None,
+            user_id: None,
+        }
     }
 }
 
@@ -121,6 +131,13 @@ impl Config {
                 return Err(LexError::Config(format!(
                     "openai.reasoning_effort 取值 \"{e}\" 无效:只支持 \"none\" / \"low\" / \"high\" / \"max\""
                 )));
+            }
+        }
+        if let Some(uid) = &cfg.openai.user_id {
+            if uid.len() > 512 || !uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err(LexError::Config(
+                    "openai.user_id 无效:只允许字母/数字/中划线/下划线,最长 512 字符(文档要求勿含隐私信息)".into(),
+                ));
             }
         }
         Ok(cfg)
@@ -246,6 +263,27 @@ mod tests {
         .unwrap();
         let err = Config::load(&d3).unwrap_err();
         assert!(err.to_string().contains("reasoning_effort"), "实际: {err}");
+    }
+
+    #[test]
+    fn openai_user_id_is_validated() {
+        let ok = temp_dir("openai-uid-ok");
+        fs::write(
+            ok.join("lex-code.toml"),
+            "provider = \"openai\"\n[openai]\nbase_url = \"http://127.0.0.1:7\"\nmodel = \"m\"\nuser_id = \"team-alice_1\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&ok).unwrap();
+        assert_eq!(cfg.openai.user_id.as_deref(), Some("team-alice_1"));
+
+        let bad = temp_dir("openai-uid-bad");
+        fs::write(
+            bad.join("lex-code.toml"),
+            "provider = \"openai\"\n[openai]\nbase_url = \"http://127.0.0.1:7\"\nmodel = \"m\"\nuser_id = \"张三\"\n",
+        )
+        .unwrap();
+        let err = Config::load(&bad).unwrap_err();
+        assert!(err.to_string().contains("user_id"), "实际: {err}");
     }
 
     #[test]

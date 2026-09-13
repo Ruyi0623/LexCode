@@ -107,6 +107,14 @@ set LEX_OPENAI_API_KEY=<你的 DeepSeek Key>         (CMD)
 - [x] 工具结果以 `role:"tool"` 回传,模型能感知测试失败并定位修复
 - [x] 拒绝路径与 Phase 1 行为一致(确认 UI 逻辑与 provider 无关,共用同一实现)
 
+### API 参考对齐(2026-09-13 第二轮,依据 /api/ 索引补抓错误码/限速/思考模式页)
+
+- **错误码语义映射**(文档 /quick_start/error_codes):429/500/503 可重试 → 自动退避重试(1s/3s,最多 2 次,payload 预序列化保证重试字节一致);400/401/422/402 等 → 错误信息带中文语义提示(如"认证失败"/"余额不足"),在 `send()` 快速失败
+- **user_id 可选透传**(文档 /quick_start/rate_limit):配置校验字符集 [a-zA-Z0-9-_] 与长度 512;用于 KVCache 隔离
+- **流式 keep-alive**:文档说明等待期会下发 `: keep-alive` 注释——SSE 解析器早已覆盖(注释行丢弃),新增 mock 测试锁定
+- **reasoning_content 回传规则确认**(/guides/thinking_mode):带 tools 必须回传(否则 400)、不带 tools 会被忽略——当前实现恒带 tools 且恒回传,兼容
+- 复测同一任务:闭环成功,4 轮请求缓存命中 1536→1792→2048→2304
+
 ### 文档对齐适配记录(2026-09-13,依据 api-docs.deepseek.com 抓取)
 
 按官方文档对 OpenAI 兼容路径做完整适配(均有测试):`max_tokens` 可选化、`thinking`/`reasoning_effort` 透传与校验、`prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` 采集(兼容 OpenAI 风格 `prompt_tokens_details.cached_tokens`)、异常 `finish_reason` 警告(content_filter/insufficient_system_resource/aborted)、4xx 错误体解析。
