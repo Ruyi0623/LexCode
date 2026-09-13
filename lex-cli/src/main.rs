@@ -7,6 +7,8 @@ use lex_core::agent::AgentLoop;
 use lex_core::config::{resolve_api_key, Config};
 use lex_core::prompt::{load_system_prompt, render_template, resolve_system_prompt_path};
 use lex_core::provider::anthropic::AnthropicProvider;
+use lex_core::provider::openai_compat::OpenAiCompatProvider;
+use lex_core::provider::Provider;
 use lex_core::tools::bash_exec::BashExec;
 use lex_core::tools::file_edit::FileEdit;
 use lex_core::tools::file_read::FileRead;
@@ -62,12 +64,21 @@ fn build_system_prompt(cfg: &Config, cwd: &Path) -> Result<String> {
 
 fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInput>) -> Result<AgentLoop> {
     let api_key = resolve_api_key(&cfg.provider)?;
-    let provider = AnthropicProvider::with_defaults(
-        cfg.anthropic.base_url.clone(),
-        cfg.anthropic.model.clone(),
-        cfg.anthropic.max_tokens,
-        api_key,
-    )?;
+    // 切换 provider 只改配置,不改 Agent Loop:两者实现同一个 Provider trait
+    let provider: Box<dyn Provider> = match cfg.provider.as_str() {
+        "openai" => Box::new(OpenAiCompatProvider::with_defaults(
+            cfg.openai.base_url.clone(),
+            cfg.openai.model.clone(),
+            cfg.openai.max_tokens,
+            api_key,
+        )?),
+        _ => Box::new(AnthropicProvider::with_defaults(
+            cfg.anthropic.base_url.clone(),
+            cfg.anthropic.model.clone(),
+            cfg.anthropic.max_tokens,
+            api_key,
+        )?),
+    };
 
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FileRead));
@@ -81,7 +92,7 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
 
     let system = build_system_prompt(cfg, &cwd)?;
     Ok(AgentLoop {
-        provider: Box::new(provider),
+        provider,
         registry,
         handler: Box::new(input),
         tool_ctx: ToolContext { cwd, shell },
