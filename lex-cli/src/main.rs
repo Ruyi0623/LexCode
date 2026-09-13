@@ -1,5 +1,6 @@
 mod confirm;
 mod render;
+mod ui;
 
 use anyhow::{Context, Result};
 use clap::Parser;
