@@ -98,11 +98,26 @@ impl AgentLoop {
 
                 state_msg(State::ExecutingTools);
                 let mut results: Vec<(&str, String, bool)> = Vec::new();
-                for (id, name, input) in &tool_uses {
-                    // Phase 3 前置:全串行;只读并发在下方接线后引入
-                    let block = execute_tool_call(&self.registry, self.handler.as_ref(), &self.tool_ctx, &self.security, id, name, input.clone()).await;
-                    if let Block::ToolResult { content, is_error, .. } = block {
-                        results.push((id.as_str(), content, is_error));
+                // 并发规则:全部只读 → join_all 并发;混入有副作用的工具 → 严格串行
+                let all_read_only = tool_uses.iter().all(|(_, name, _)| {
+                    self.registry.get(name).map(|t| t.read_only()).unwrap_or(false)
+                });
+                if all_read_only && tool_uses.len() > 1 {
+                    let blocks = futures::future::join_all(tool_uses.iter().map(|(id, name, input)| {
+                        execute_tool_call(&self.registry, self.handler.as_ref(), &self.tool_ctx, &self.security, id, name, input.clone())
+                    }))
+                    .await;
+                    for ((id, _, _), block) in tool_uses.iter().zip(blocks) {
+                        if let Block::ToolResult { content, is_error, .. } = block {
+                            results.push((id.as_str(), content, is_error));
+                        }
+                    }
+                } else {
+                    for (id, name, input) in &tool_uses {
+                        let block = execute_tool_call(&self.registry, self.handler.as_ref(), &self.tool_ctx, &self.security, id, name, input.clone()).await;
+                        if let Block::ToolResult { content, is_error, .. } = block {
+                            results.push((id.as_str(), content, is_error));
+                        }
                     }
                 }
                 self.history.push(Message::tool_results(results));

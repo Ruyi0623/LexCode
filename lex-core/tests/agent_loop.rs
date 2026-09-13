@@ -155,3 +155,83 @@ async fn max_turns_exceeded_is_error() {
     let err = loop_.run_turn("x", &mut |_| {}).await.unwrap_err();
     assert!(matches!(err, LexError::Provider(_)));
 }
+
+// ---------- 只读并发 / 副作用串行 ----------
+
+use std::time::{Duration, Instant};
+
+struct SlowTool {
+    name: &'static str,
+    read_only: bool,
+}
+#[async_trait]
+impl Tool for SlowTool {
+    fn name(&self) -> &str { self.name }
+    fn description(&self) -> &str { "s" }
+    fn schema(&self) -> serde_json::Value { json!({"type":"object"}) }
+    fn read_only(&self) -> bool { self.read_only }
+    async fn execute(&self, _i: serde_json::Value, _c: &ToolContext) -> Result<String> {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        Ok(format!("{}-done", self.name))
+    }
+}
+
+fn slow_loop(scripts: Vec<Vec<ProviderEvent>>) -> AgentLoop {
+    AgentLoop {
+        provider: Box::new(MockProvider::new(scripts)),
+        registry: ToolRegistry::new(),
+        handler: Box::new(AllowAll),
+        tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default() },
+        security: SecurityGuard::new(SecurityRules::defaults()),
+        system: String::new(),
+        history: vec![],
+        max_turns: 5,
+    }
+}
+
+#[tokio::test]
+async fn readonly_tools_run_concurrently() {
+    // 两个各 250ms 的只读工具:并发应 ~250ms,串行需 ~500ms
+    let scripts = vec![
+        [
+            tool_call_event("t1", "slow_read", json!({"p":"a"})),
+            tool_call_event("t2", "slow_read", json!({"p":"b"})),
+        ].concat(),
+        vec![ProviderEvent::TextDelta("都读完了".into())],
+    ];
+    let mut loop_ = slow_loop(scripts);
+    loop_.registry.register(Box::new(SlowTool { name: "slow_read", read_only: true }));
+
+    let start = Instant::now();
+    let text = loop_.run_turn("并发读", &mut |_| {}).await.unwrap();
+    let elapsed = start.elapsed();
+
+    assert_eq!(text, "都读完了");
+    assert!(elapsed < Duration::from_millis(400), "只读工具应并发执行,实际耗时 {elapsed:?}");
+    // 结果顺序与 tool_use 顺序一致
+    match &loop_.history[2].content[0] {
+        Block::ToolResult { content, .. } => assert_eq!(content, "slow_read-done"),
+        o => panic!("{o:?}"),
+    }
+}
+
+#[tokio::test]
+async fn mixed_batch_runs_serially() {
+    // 一个只读 + 一个副作用:严格串行,总耗时 >= 两次执行之和
+    let scripts = vec![
+        [
+            tool_call_event("t1", "slow_read", json!({"p":"a"})),
+            tool_call_event("t2", "slow_write", json!({"p":"b"})),
+        ].concat(),
+        vec![ProviderEvent::TextDelta("完成".into())],
+    ];
+    let mut loop_ = slow_loop(scripts);
+    loop_.registry.register(Box::new(SlowTool { name: "slow_read", read_only: true }));
+    loop_.registry.register(Box::new(SlowTool { name: "slow_write", read_only: false }));
+
+    let start = Instant::now();
+    let _ = loop_.run_turn("混合批次", &mut |_| {}).await.unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(elapsed >= Duration::from_millis(450), "混入副作用工具时必须串行,实际耗时 {elapsed:?}");
+}
