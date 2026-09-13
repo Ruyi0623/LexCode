@@ -1,5 +1,7 @@
 pub mod anthropic;
 pub mod anthropic_types;
+pub mod openai_compat;
+pub mod openai_types;
 pub mod sse;
 
 use crate::error::Result;
