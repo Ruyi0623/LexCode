@@ -2,6 +2,8 @@
 
 类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)、Phase 4(AGENTS.md 注入 + 上下文压缩 + 前缀缓存校验/遥测)均已完成并真实联调;Phase 5 见下方路线图。
 
+目录:`lex-core/src/` 核心库(message / provider / agent / tools / security / context / config / prompt)、`lex-cli/src/` 终端 UI(main / render / confirm)、`docs/` 设计文档与需求任务书、`examples/smoke/` 真实联调步骤、`assets/` 运行时系统提示词、`tests/`(位于各 crate)按真实抓包/mock 固化回归。
+
 ## 必读文档
 
 - `docs/superpowers/specs/2026-09-12-lex-code-design.md` — 权威设计文档(架构、三级权限、缓存策略、三平台适配)
@@ -22,6 +24,7 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 
 ## 环境坑点(重要)
 
+- **本文件会被自身产品加载**:lex-code 启动时把项目根 `AGENTS.md` 注入模型系统提示词(`context/agents_md.rs`)。改这里 = 改运行时模型行为;冒烟时模型会读它,措辞要当"给模型的指令"对待。
 - **仓库路径含中文**(`D:\项目\`),GNU dlltool 不兼容 → `.cargo/config.toml` 已把 target-dir 重定向到 `D:/lexcode-target`。**不要删除该配置**。
 - 运行时按以下顺序查找系统提示词:配置 `system_prompt_path` → `<cwd>/assets/` → `<exe目录>/assets/`。对 release 二进制冒烟时需把 `assets/coding-agent-system-prompt.md` 复制到 exe 旁。
 - 配置优先级:env(`LEX_*`)> 项目级 `lex-code.toml` > 内置默认。**Key 只从环境变量读**(`LEX_ANTHROPIC_API_KEY` / `LEX_OPENAI_API_KEY`),TOML 不放凭证;base_url/model 必须显式配置,代码零硬编码默认 URL/模型。本机已在用户级环境变量永久配置这两把 Key(同一把 DeepSeek Key,对 OpenAI 端点与 Anthropic 兼容端点通用),新终端可直接跑冒烟。
