@@ -1,6 +1,6 @@
 # Lex Code — Agent 指引
 
-类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)已真实联调验收;Phase 2(OpenAI 兼容 adapter)代码与测试已完成,**待 DeepSeek Key 真实冒烟**;Phase 3-5 见下方路线图。
+类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)与 Phase 2(OpenAI 兼容 adapter,DeepSeek 端点)均已真实联调验收,Phase 3-5 见下方路线图。
 
 ## 必读文档
 
@@ -47,7 +47,7 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 
 ## 路线图(后续 Phase)
 
-- ~~Phase 2:抽 Provider 泛化落定 + `OpenAICompatibleAdapter`~~(已完成,待真实冒烟,见 `examples/smoke/README.md` 第 7 节)。
+- ~~Phase 2:抽 Provider 泛化落定 + `OpenAICompatibleAdapter`~~(已完成并通过 DeepSeek 端点真实冒烟,见 `examples/smoke/README.md` 第 7 节)。
 - Phase 3:`grep_search`(内置 ignore+regex,不调外部 grep)/`todo_write`、三级权限(Forebidden 正则规则表)、只读工具同轮并发。
 - Phase 4:AGENTS.md 注入、token 阈值触发一次压缩、`ImplicitPrefixCacheStrategy`(字节级前缀校验 + `prompt_cache_hit_tokens` 遥测)。
 - Phase 5:错误边界打磨、可观测性、配置文档。

@@ -90,6 +90,15 @@ set LEX_OPENAI_API_KEY=<你的 DeepSeek Key>         (CMD)
 - [ ] 工具结果以 `role:"tool"` + `tool_call_id` 回传,失败结果带失败标记,模型能感知并调整
 - [ ] 切回 `provider = "anthropic"`(配回 [anthropic] 段 + LEX_ANTHROPIC_API_KEY)行为一致
 
-### 真实联调记录(待补)
+### 真实联调记录(2026-09-13,DeepSeek OpenAI 兼容端点)
 
-Phase 2 需求方提供 DeepSeek Key 后按上述步骤执行并在此记录结论。
+冒烟目标:`provider = "openai"`,`base_url = "https://api.deepseek.com"`,`model = "deepseek-flash"`。Key 只经 `LEX_OPENAI_API_KEY` 环境变量注入,确认输入经管道喂入 `y`。
+
+结果:**闭环成功**——agent 流式读取文件 → 连跑 `ls`/`cargo test` 诊断出 `a - b` 应为 `a + b`(任务描述称"编译错误",agent 如实指出实为逻辑错误,未盲从)→ 经确认 `file_edit` 修改 → `cargo test` 通过 → 如实汇报。全程 5 轮模型请求、每轮均带工具调用,多轮历史回传(`tool_calls` 数组 + `role:"tool"` 结果)未被 400 拒绝;逐工具确认(含 file_edit 前后文本 diff)、流式渲染、末尾 token 统计均符合预期。
+
+验收清单逐项:
+- [x] 请求打到 `[openai].base_url` 的 `POST /chat/completions`
+- [x] 流式输出可见,token 统计(输入/输出)随轮次显示
+- [x] 多轮工具调用未被 400 拒绝(历史 assistant 消息回传正常)
+- [x] 工具结果以 `role:"tool"` 回传,模型能感知测试失败并定位修复
+- [x] 拒绝路径与 Phase 1 行为一致(确认 UI 逻辑与 provider 无关,共用同一实现)
