@@ -228,7 +228,8 @@ async fn boxed_input(
     let mut state = InputState::new(width);
     redraw(&mut state, false);
     anstream::print!("\r\n{}╰{}╯{}", theme::ACCENT, "─".repeat(width), theme::RESET);
-    crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveUp(1), crossterm::cursor::MoveToColumn(0))
+    // 回到内容行,光标停在输入起点("│ › " 前缀占 4 列,MoveToColumn 为 0 基)
+    crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveUp(1), crossterm::cursor::MoveToColumn(4))
         .map_err(LexError::Io)?;
 
     let mut ctrl_c_on_empty = false;
