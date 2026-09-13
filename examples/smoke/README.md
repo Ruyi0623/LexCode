@@ -70,7 +70,11 @@ provider = "openai"
 
 [openai]
 base_url = "https://api.deepseek.com"
-model = "deepseek-chat"        # 推理闭环验证可换 "deepseek-reasoner"
+model = "deepseek-flash"       # 或 "deepseek-v4-pro"
+# 可选:不配置 max_tokens 时不发送该参数,走服务端默认(非思考 8K / 思考 64K),
+# 避免固定 8192 截断思维链;thinking / reasoning_effort 同样可选透传:
+# thinking = "enabled"           # enabled / disabled
+# reasoning_effort = "high"      # none / low / high / max
 ```
 
 环境变量换成 OpenAI 兼容端点的 Key:
@@ -102,3 +106,9 @@ set LEX_OPENAI_API_KEY=<你的 DeepSeek Key>         (CMD)
 - [x] 多轮工具调用未被 400 拒绝(历史 assistant 消息回传正常)
 - [x] 工具结果以 `role:"tool"` 回传,模型能感知测试失败并定位修复
 - [x] 拒绝路径与 Phase 1 行为一致(确认 UI 逻辑与 provider 无关,共用同一实现)
+
+### 文档对齐适配记录(2026-09-13,依据 api-docs.deepseek.com 抓取)
+
+按官方文档对 OpenAI 兼容路径做完整适配(均有测试):`max_tokens` 可选化、`thinking`/`reasoning_effort` 透传与校验、`prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` 采集(兼容 OpenAI 风格 `prompt_tokens_details.cached_tokens`)、异常 `finish_reason` 警告(content_filter/insufficient_system_resource/aborted)、4xx 错误体解析。
+
+适配后复测同一任务:**闭环成功,缓存遥测端到端生效**——6 轮请求全部成功,输入 token 的缓存命中随 append-only 前缀增长:1536 → 1792 → 8192 → 8448 → 8832 → 9088(命中率 97%),末尾统计显示"(输入 9350 tokens · 输出 214 tokens · 缓存命中 9088)"。原始流抓包确认 `delta.reasoning_content` 为增量文本且思考期间 `content` 为 `null`,解析器已覆盖;本次简单任务模型未输出思维链,渲染路径由 mock 测试保障。
