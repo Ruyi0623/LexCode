@@ -1,6 +1,7 @@
 use futures::StreamExt;
-use lex_core::message::Message;
+use lex_core::message::{Message, Usage};
 use lex_core::provider::openai_compat::OpenAiCompatProvider;
+use lex_core::provider::openai_types::OpenAiParams;
 use lex_core::provider::{Provider, ProviderEvent, RequestContext};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -70,7 +71,7 @@ async fn streams_text_thinking_and_usage() {
     // usage 帧在 [DONE] 之前到达(include_usage 语义);此处合并到 stop 帧之后的独立帧
     let body = body + &chunk("{}", Some("stop"), true) + "data: [DONE]\n\n";
     let url = spawn_sse_server(vec![body]).await;
-    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), 8, "k".into());
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
     let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
     let events: Vec<ProviderEvent> = stream.map(|r| r.unwrap()).collect().await;
 
@@ -80,7 +81,10 @@ async fn streams_text_thinking_and_usage() {
     let last = events.last().unwrap();
     match last {
         ProviderEvent::Completed { usage } => {
-            assert_eq!(*usage, lex_core::message::Usage { input_tokens: 12, output_tokens: 34 })
+            assert_eq!(
+                *usage,
+                lex_core::message::Usage { input_tokens: 12, output_tokens: 34, ..Usage::default() }
+            )
         }
         other => panic!("期望 Completed,实际 {other:?}"),
     }
@@ -109,7 +113,7 @@ async fn accumulates_tool_calls_across_deltas() {
         chunk(r#"{}"#, Some("tool_calls"), true),
     );
     let url = spawn_sse_server(vec![body]).await;
-    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), 8, "k".into());
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
     let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
     let events: Vec<ProviderEvent> = stream.map(|r| r.unwrap()).collect().await;
 
@@ -132,7 +136,7 @@ async fn handles_chunk_split_arbitrarily() {
         chunk("{}", Some("stop"), true),
     );
     let url = spawn_sse_server(vec![body]).await;
-    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), 8, "k".into());
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
     let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
     let events: Vec<ProviderEvent> = stream.map(|r| r.unwrap()).collect().await;
     let text: String = events.iter().filter_map(|e| match e {
@@ -146,7 +150,7 @@ async fn handles_chunk_split_arbitrarily() {
 async fn error_chunk_yields_err() {
     let body = "data: {\"error\":{\"message\":\"Insufficient Balance\",\"type\":\"invalid_request_error\"}}\n\ndata: [DONE]\n\n".to_string();
     let url = spawn_sse_server(vec![body]).await;
-    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), 8, "k".into());
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
     let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
     let items: Vec<_> = stream.collect().await;
     assert!(items.iter().any(|r| r.is_err()), "error 帧必须产生 Err 项");
@@ -162,8 +166,41 @@ async fn http_error_status_yields_err() {
         let _ = sock.read(&mut buf).await;
         sock.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
     });
-    let p = OpenAiCompatProvider::new(http_client(), format!("http://{addr}"), "m".into(), 8, "k".into());
+    let p = OpenAiCompatProvider::new(http_client(), format!("http://{addr}"), "m".into(), OpenAiParams::default(), "k".into());
     let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
     let items: Vec<_> = stream.collect().await;
     assert!(items.iter().any(|r| r.is_err()));
+}
+
+#[tokio::test]
+async fn collects_cache_hit_tokens_from_usage() {
+    // DeepSeek 文档:usage 带 prompt_cache_hit_tokens / prompt_cache_miss_tokens
+    let body = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"prompt_cache_hit_tokens\":80,\"prompt_cache_miss_tokens\":20}}\n\ndata: [DONE]\n\n".to_string();
+    let url = spawn_sse_server(vec![body]).await;
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
+    let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
+    let events: Vec<ProviderEvent> = stream.map(|r| r.unwrap()).collect().await;
+    match events.last().unwrap() {
+        ProviderEvent::Completed { usage } => {
+            assert_eq!(usage.input_tokens, 100);
+            assert_eq!(usage.output_tokens, 10);
+            assert_eq!(usage.cache_hit_tokens, 80);
+            assert_eq!(usage.cache_miss_tokens, 20);
+        }
+        other => panic!("期望 Completed,实际 {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn collects_cache_hit_via_openai_style_details() {
+    // 只带 prompt_tokens_details.cached_tokens 的端点也要能采集(与 hit_tokens 同值)
+    let body = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"prompt_tokens_details\":{\"cached_tokens\":77}}}\n\ndata: [DONE]\n\n".to_string();
+    let url = spawn_sse_server(vec![body]).await;
+    let p = OpenAiCompatProvider::new(http_client(), url, "m".into(), OpenAiParams::default(), "k".into());
+    let stream = p.send(ctx_with(vec![Message::user_text("hi")])).await.unwrap();
+    let events: Vec<ProviderEvent> = stream.map(|r| r.unwrap()).collect().await;
+    match events.last().unwrap() {
+        ProviderEvent::Completed { usage } => assert_eq!(usage.cache_hit_tokens, 77),
+        other => panic!("期望 Completed,实际 {other:?}"),
+    }
 }

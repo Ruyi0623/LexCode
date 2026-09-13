@@ -64,7 +64,7 @@ async fn streams_text_events_and_usage() {
     assert_eq!(events[0], ProviderEvent::TextDelta("你好".into()));
     let last = events.last().unwrap();
     match last {
-        ProviderEvent::Completed { usage } => assert_eq!(*usage, Usage { input_tokens: 10, output_tokens: 7 }),
+        ProviderEvent::Completed { usage } => assert_eq!(*usage, Usage { input_tokens: 10, output_tokens: 7, ..Usage::default() }),
         other => panic!("期望 Completed,实际 {other:?}"),
     }
 }

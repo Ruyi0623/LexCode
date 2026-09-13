@@ -26,7 +26,13 @@ pub struct AnthropicConfig {
 pub struct OpenAiConfig {
     pub base_url: String,
     pub model: String,
-    pub max_tokens: u32,
+    /// 不设置时不发送 max_tokens,由服务端按模式取默认
+    /// (DeepSeek:非思考 8K / 思考 64K,避免固定 8K 截断思维链)
+    pub max_tokens: Option<u32>,
+    /// DeepSeek 思考模式开关:"enabled" / "disabled";不设置走服务端默认
+    pub thinking: Option<String>,
+    /// DeepSeek 思考强度:"none" / "low" / "high" / "max";不设置走服务端默认
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -57,7 +63,7 @@ impl Default for AnthropicConfig {
 
 impl Default for OpenAiConfig {
     fn default() -> Self {
-        OpenAiConfig { base_url: String::new(), model: String::new(), max_tokens: 8192 }
+        OpenAiConfig { base_url: String::new(), model: String::new(), max_tokens: None, thinking: None, reasoning_effort: None }
     }
 }
 
@@ -101,6 +107,21 @@ impl Config {
             return Err(LexError::Config(format!(
                 "缺少模型名:请在 lex-code.toml 的 {section} 段设置 model(本项目不允许内置默认模型)"
             )));
+        }
+        // DeepSeek 参数取值校验(文档:create-chat-completion)
+        if let Some(t) = &cfg.openai.thinking {
+            if !matches!(t.as_str(), "enabled" | "disabled") {
+                return Err(LexError::Config(format!(
+                    "openai.thinking 取值 \"{t}\" 无效:只支持 \"enabled\" / \"disabled\""
+                )));
+            }
+        }
+        if let Some(e) = &cfg.openai.reasoning_effort {
+            if !matches!(e.as_str(), "none" | "low" | "high" | "max") {
+                return Err(LexError::Config(format!(
+                    "openai.reasoning_effort 取值 \"{e}\" 无效:只支持 \"none\" / \"low\" / \"high\" / \"max\""
+                )));
+            }
         }
         Ok(cfg)
     }
@@ -189,9 +210,42 @@ mod tests {
         .unwrap();
         let cfg = Config::load(&d2).unwrap();
         assert_eq!(cfg.openai.model, "deepseek-test");
-        assert_eq!(cfg.openai.max_tokens, 8192);
+        // max_tokens 未设置 → 不发送,走服务端默认(思考模式 64K)
+        assert_eq!(cfg.openai.max_tokens, None);
+        assert_eq!(cfg.openai.thinking, None);
         // anthropic 段未配置时不得误用 openai 的 base_url 通过校验
         assert_eq!(cfg.anthropic.base_url, "");
+    }
+
+    #[test]
+    fn openai_thinking_params_are_parsed_and_validated() {
+        let d = temp_dir("openai-thinking");
+        fs::write(
+            d.join("lex-code.toml"),
+            "provider = \"openai\"\n[openai]\nbase_url = \"http://127.0.0.1:7\"\nmodel = \"m\"\nthinking = \"enabled\"\nreasoning_effort = \"high\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&d).unwrap();
+        assert_eq!(cfg.openai.thinking.as_deref(), Some("enabled"));
+        assert_eq!(cfg.openai.reasoning_effort.as_deref(), Some("high"));
+
+        let d2 = temp_dir("openai-thinking-bad");
+        fs::write(
+            d2.join("lex-code.toml"),
+            "provider = \"openai\"\n[openai]\nbase_url = \"http://127.0.0.1:7\"\nmodel = \"m\"\nthinking = \"always\"\n",
+        )
+        .unwrap();
+        let err = Config::load(&d2).unwrap_err();
+        assert!(err.to_string().contains("thinking"), "实际: {err}");
+
+        let d3 = temp_dir("openai-effort-bad");
+        fs::write(
+            d3.join("lex-code.toml"),
+            "provider = \"openai\"\n[openai]\nbase_url = \"http://127.0.0.1:7\"\nmodel = \"m\"\nreasoning_effort = \"ultra\"\n",
+        )
+        .unwrap();
+        let err = Config::load(&d3).unwrap_err();
+        assert!(err.to_string().contains("reasoning_effort"), "实际: {err}");
     }
 
     #[test]

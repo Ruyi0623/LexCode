@@ -12,7 +12,30 @@ pub struct OpenAiRequest {
     pub tools: Vec<OpenAiTool>,
     pub stream: bool,
     pub stream_options: StreamOptions,
-    pub max_tokens: u32,
+    /// DeepSeek 思考模式开关(type: enabled/disabled);未配置不发送
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingParam>,
+    /// DeepSeek 思考强度(none/low/high/max);未配置不发送
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// 未配置不发送:DeepSeek 非思考默认 8K / 思考默认 64K,
+    /// 固定发送 8192 会在思考模式截断思维链
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ThinkingParam {
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// 从配置提取的 DeepSeek 采样参数(openai 段独有,Anthropic 段不需要)。
+#[derive(Debug, Clone, Default)]
+pub struct OpenAiParams {
+    pub max_tokens: Option<u32>,
+    pub thinking: Option<String>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -116,7 +139,7 @@ fn map_assistant(m: &Message) -> Option<OpenAiMessage> {
 fn map_user(m: &Message) -> Vec<OpenAiMessage> {
     let mut out: Vec<OpenAiMessage> = Vec::new();
     let mut text: Vec<String> = Vec::new();
-    let mut flush_text = |out: &mut Vec<OpenAiMessage>, text: &mut Vec<String>| {
+    let flush_text = |out: &mut Vec<OpenAiMessage>, text: &mut Vec<String>| {
         if !text.is_empty() {
             out.push(OpenAiMessage {
                 role: "user".into(),
@@ -151,7 +174,7 @@ fn map_user(m: &Message) -> Vec<OpenAiMessage> {
     out
 }
 
-pub fn build_request(ctx: &RequestContext, model: &str, max_tokens: u32) -> OpenAiRequest {
+pub fn build_request(ctx: &RequestContext, model: &str, params: &OpenAiParams) -> OpenAiRequest {
     let mut messages: Vec<OpenAiMessage> = Vec::new();
     if !ctx.system.is_empty() {
         messages.push(OpenAiMessage {
@@ -189,7 +212,9 @@ pub fn build_request(ctx: &RequestContext, model: &str, max_tokens: u32) -> Open
             .collect(),
         stream: true,
         stream_options: StreamOptions { include_usage: true },
-        max_tokens,
+        thinking: params.thinking.as_ref().map(|t| ThinkingParam { kind: t.clone() }),
+        reasoning_effort: params.reasoning_effort.clone(),
+        max_tokens: params.max_tokens,
     }
 }
 
@@ -204,11 +229,29 @@ mod tests {
 
     #[test]
     fn request_field_order_is_exact() {
-        let req = build_request(&ctx_with(vec![Message::user_text("hi")]), "m", 8);
+        // 参数全缺省:max_tokens/thinking/reasoning_effort 不进入 payload
+        let req = build_request(&ctx_with(vec![Message::user_text("hi")]), "m", &OpenAiParams::default());
         let s = serde_json::to_string(&req).unwrap();
         assert_eq!(
             s,
-            r#"{"model":"m","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}],"tools":[],"stream":true,"stream_options":{"include_usage":true},"max_tokens":8}"#
+            r#"{"model":"m","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}],"tools":[],"stream":true,"stream_options":{"include_usage":true}}"#
+        );
+    }
+
+    #[test]
+    fn deepseek_params_serialize_after_stream_options() {
+        // 文档对齐:thinking 对象 / reasoning_effort / max_tokens 可选透传,
+        // 字段顺序固定(前缀缓存确定性)
+        let params = OpenAiParams {
+            max_tokens: Some(4096),
+            thinking: Some("enabled".into()),
+            reasoning_effort: Some("high".into()),
+        };
+        let req = build_request(&ctx_with(vec![Message::user_text("hi")]), "m", &params);
+        let s = serde_json::to_string(&req).unwrap();
+        assert_eq!(
+            s,
+            r#"{"model":"m","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}],"tools":[],"stream":true,"stream_options":{"include_usage":true},"thinking":{"type":"enabled"},"reasoning_effort":"high","max_tokens":4096}"#
         );
     }
 
@@ -223,7 +266,7 @@ mod tests {
             }],
             messages: vec![],
         };
-        let req = build_request(&ctx, "m", 1);
+        let req = build_request(&ctx, "m", &OpenAiParams::default());
         let s = serde_json::to_string(&req.tools[0]).unwrap();
         assert_eq!(
             s,
@@ -244,7 +287,7 @@ mod tests {
             ]),
             Message::tool_results(vec![("t1", "content".into(), false)]),
         ]);
-        let req = build_request(&ctx, "m", 1);
+        let req = build_request(&ctx, "m", &OpenAiParams::default());
         assert_eq!(req.messages.len(), 4);
         // [0] 是 system;assistant 消息:reasoning_content + content + tool_calls 三者齐全且顺序稳定
         let s = serde_json::to_string(&req.messages[2]).unwrap();
@@ -263,7 +306,7 @@ mod tests {
             role: Role::User,
             content: vec![Block::ToolResult { tool_use_id: "t1".into(), content: "boom".into(), is_error: true }],
         }]);
-        let req = build_request(&ctx, "m", 1);
+        let req = build_request(&ctx, "m", &OpenAiParams::default());
         let s = serde_json::to_string(&req.messages[1]).unwrap();
         assert_eq!(s, r#"{"role":"tool","content":"[工具执行失败] boom","tool_call_id":"t1"}"#);
     }
@@ -277,7 +320,7 @@ mod tests {
                 Block::Text { text: "继续".into() },
             ],
         }]);
-        let req = build_request(&ctx, "m", 1);
+        let req = build_request(&ctx, "m", &OpenAiParams::default());
         assert_eq!(req.messages.len(), 3);
         assert_eq!(req.messages[1].role, "tool");
         assert_eq!(req.messages[2].role, "user");
@@ -287,7 +330,7 @@ mod tests {
     #[test]
     fn empty_system_is_skipped() {
         let ctx = RequestContext { system: String::new(), tools: vec![], messages: vec![Message::user_text("hi")] };
-        let req = build_request(&ctx, "m", 1);
+        let req = build_request(&ctx, "m", &OpenAiParams::default());
         assert_eq!(req.messages.len(), 1);
         assert_eq!(req.messages[0].role, "user");
     }

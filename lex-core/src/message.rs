@@ -26,6 +26,11 @@ pub struct Message {
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// DeepSeek 上下文硬盘缓存:本次输入命中缓存的 token 数
+    /// (Anthropic 端点映射 cache_read_input_tokens;无缓存数据时为 0)
+    pub cache_hit_tokens: u64,
+    /// 本次输入未命中缓存的 token 数(DeepSeek 语义)
+    pub cache_miss_tokens: u64,
 }
 
 impl Message {

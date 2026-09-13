@@ -123,6 +123,10 @@ impl Provider for AnthropicProvider {
                         "message_start" => {
                             if let Some(u) = frame.message.as_ref().and_then(|m| m.get("usage")) {
                                 usage.input_tokens = u.get("input_tokens").and_then(Value::as_u64).unwrap_or(usage.input_tokens);
+                                usage.cache_hit_tokens = u
+                                    .get("cache_read_input_tokens")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(usage.cache_hit_tokens);
                             }
                         }
                         "content_block_start" => {

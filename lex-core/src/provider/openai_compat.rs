@@ -1,4 +1,4 @@
-use super::openai_types::build_request;
+use super::openai_types::{build_request, OpenAiParams};
 use super::sse;
 use super::{Provider, ProviderEvent, RequestContext, StreamResult};
 use crate::error::{LexError, Result};
@@ -12,7 +12,7 @@ pub struct OpenAiCompatProvider {
     http: reqwest::Client,
     base_url: String,
     model: String,
-    max_tokens: u32,
+    params: OpenAiParams,
     api_key: String,
 }
 
@@ -40,6 +40,20 @@ struct OpenAiUsage {
     prompt_tokens: u64,
     #[serde(default)]
     completion_tokens: u64,
+    /// DeepSeek 上下文硬盘缓存统计(默认开启,无需显式标记)
+    #[serde(default)]
+    prompt_cache_hit_tokens: u64,
+    #[serde(default)]
+    prompt_cache_miss_tokens: u64,
+    /// 兼容 OpenAI 风格字段:与 prompt_cache_hit_tokens 同值
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: u64,
 }
 
 #[derive(Default)]
@@ -50,8 +64,8 @@ struct ToolAcc {
 }
 
 impl OpenAiCompatProvider {
-    pub fn new(http: reqwest::Client, base_url: String, model: String, max_tokens: u32, api_key: String) -> Self {
-        OpenAiCompatProvider { http, base_url, model, max_tokens, api_key }
+    pub fn new(http: reqwest::Client, base_url: String, model: String, params: OpenAiParams, api_key: String) -> Self {
+        OpenAiCompatProvider { http, base_url, model, params, api_key }
     }
 
     fn endpoint(&self) -> String {
@@ -59,16 +73,16 @@ impl OpenAiCompatProvider {
     }
 
     /// 便捷构造:内部建 reqwest::Client(lex-cli 不直接依赖 reqwest)。
-    pub fn with_defaults(base_url: String, model: String, max_tokens: u32, api_key: String) -> Result<Self> {
+    pub fn with_defaults(base_url: String, model: String, params: OpenAiParams, api_key: String) -> Result<Self> {
         let http = reqwest::Client::builder().build()?;
-        Ok(OpenAiCompatProvider::new(http, base_url, model, max_tokens, api_key))
+        Ok(OpenAiCompatProvider::new(http, base_url, model, params, api_key))
     }
 }
 
 #[async_trait::async_trait]
 impl Provider for OpenAiCompatProvider {
     async fn send(&self, ctx: RequestContext) -> Result<StreamResult> {
-        let req = build_request(&ctx, &self.model, self.max_tokens);
+        let req = build_request(&ctx, &self.model, &self.params);
         let url = self.endpoint();
         let http = self.http.clone();
         let api_key = self.api_key.clone();
@@ -83,7 +97,12 @@ impl Provider for OpenAiCompatProvider {
             let status = resp.status();
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
-                return Err(LexError::Provider(format!("HTTP {status}: {}", truncate_body(&body))));
+                // DeepSeek 错误体形如 {"error":{"message":"...","type":...}},优先取干净信息
+                let msg = serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .and_then(|v| v.get("error")?.get("message")?.as_str().map(|s| s.to_string()))
+                    .unwrap_or_else(|| truncate_body(&body).to_string());
+                return Err(LexError::Provider(format!("HTTP {status}: {msg}")));
             }
             Ok(resp.bytes_stream())
         };
@@ -135,6 +154,19 @@ impl Provider for OpenAiCompatProvider {
                     if let Some(u) = chunk.usage {
                         usage.input_tokens = u.prompt_tokens;
                         usage.output_tokens = u.completion_tokens;
+                        usage.cache_hit_tokens = if u.prompt_cache_hit_tokens > 0 {
+                            u.prompt_cache_hit_tokens
+                        } else {
+                            u.prompt_tokens_details.map(|d| d.cached_tokens).unwrap_or(0)
+                        };
+                        usage.cache_miss_tokens = u.prompt_cache_miss_tokens;
+                        tracing::info!(
+                            input = usage.input_tokens,
+                            output = usage.output_tokens,
+                            cache_hit = usage.cache_hit_tokens,
+                            cache_miss = usage.cache_miss_tokens,
+                            "usage 与上下文缓存命中统计"
+                        );
                     }
                     for choice in &chunk.choices {
                         let delta = &choice.delta;
@@ -171,6 +203,13 @@ impl Provider for OpenAiCompatProvider {
                                         }
                                     }
                                 }
+                            }
+                        }
+                        if let Some(f) = &choice.finish_reason {
+                            if f != "stop" && f != "tool_calls" {
+                                // 文档取值:content_filter / insufficient_system_resource / aborted 等,
+                                // 均属非正常收尾,提醒上层但不中断(工具结果回填路径仍可用)
+                                tracing::warn!(finish_reason = f, "流式响应异常收尾");
                             }
                         }
                         if choice.finish_reason.is_some() && !tools.is_empty() {

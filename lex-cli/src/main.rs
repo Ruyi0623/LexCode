@@ -8,6 +8,7 @@ use lex_core::config::{resolve_api_key, Config};
 use lex_core::prompt::{load_system_prompt, render_template, resolve_system_prompt_path};
 use lex_core::provider::anthropic::AnthropicProvider;
 use lex_core::provider::openai_compat::OpenAiCompatProvider;
+use lex_core::provider::openai_types::OpenAiParams;
 use lex_core::provider::Provider;
 use lex_core::tools::bash_exec::BashExec;
 use lex_core::tools::file_edit::FileEdit;
@@ -69,7 +70,11 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
         "openai" => Box::new(OpenAiCompatProvider::with_defaults(
             cfg.openai.base_url.clone(),
             cfg.openai.model.clone(),
-            cfg.openai.max_tokens,
+            OpenAiParams {
+                max_tokens: cfg.openai.max_tokens,
+                thinking: cfg.openai.thinking.clone(),
+                reasoning_effort: cfg.openai.reasoning_effort.clone(),
+            },
             api_key,
         )?),
         _ => Box::new(AnthropicProvider::with_defaults(
@@ -128,7 +133,8 @@ async fn run() -> Result<()> {
         interactive_session(&mut agent, &input).await
     } else {
         let task = cli.task.join(" ");
-        let text = agent.run_turn(&task, &mut |e| render::render_event(e)).await?;
+        let mut renderer = render::Renderer::new();
+        let text = agent.run_turn(&task, &mut |e| renderer.render(e)).await?;
         println!("\n{text}");
         Ok(())
     }
@@ -155,7 +161,10 @@ async fn interactive_session(agent: &mut AgentLoop, input: &confirm::CliInput) -
         if input.is_empty() {
             continue;
         }
-        let result = agent.run_turn(input, &mut |e| render::render_event(e)).await;
+        let result = {
+            let mut renderer = render::Renderer::new();
+            agent.run_turn(input, &mut |e| renderer.render(e)).await
+        };
         if let Err(e) = result {
             anstream::println!("\n\x1b[31m本轮失败: {e}\x1b[0m");
             anstream::println!("(历史已保留,可直接继续描述或纠正)");
