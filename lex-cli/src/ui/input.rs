@@ -1,4 +1,5 @@
 use crate::ui::theme;
+use crossterm::tty::IsTty;
 use unicode_width::UnicodeWidthChar;
 
 // ---------- 纯逻辑(单测覆盖,不依赖终端) ----------
@@ -134,6 +135,199 @@ impl InputHistory {
             }
         }
     }
+}
+
+// ---------- 终端集成 ----------
+
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::terminal;
+use lex_core::error::{LexError, Result};
+
+/// 输入结果:Submitted 提交文本;Exit 退出会话(Ctrl+D / 空输入时再次 Ctrl+C)
+pub enum InputOutcome {
+    Submitted(String),
+    Exit,
+}
+
+/// raw mode 守卫:Drop 恢复,panic/错误路径也不残留
+struct RawGuard;
+impl RawGuard {
+    fn new() -> std::io::Result<Self> {
+        terminal::enable_raw_mode()?;
+        Ok(RawGuard)
+    }
+}
+impl Drop for RawGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+/// 单例事件读取线程:阻塞 read() 经无界 channel 供给异步侧;
+/// 任务执行期间产生的按键会在下次输入会话开始时被清空。
+fn event_bus() -> &'static (
+    tokio::sync::mpsc::UnboundedSender<Event>,
+    tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Event>>,
+) {
+    static BUS: std::sync::OnceLock<(
+        tokio::sync::mpsc::UnboundedSender<Event>,
+        tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Event>>,
+    )> = std::sync::OnceLock::new();
+    BUS.get_or_init(|| {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx_thread = tx.clone();
+        std::thread::spawn(move || loop {
+            match crossterm::event::read() {
+                Ok(ev) => {
+                    if tx_thread.send(ev).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        });
+        (tx, tokio::sync::Mutex::new(rx))
+    })
+}
+
+async fn drain_pending(rx: &tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Event>>) {
+    let mut rx = rx.lock().await;
+    while rx.try_recv().is_ok() {}
+}
+
+/// 输入入口:stdin/stdout 均为 TTY 时用 crossterm 输入盒;否则降级共享 CliInput 行式读取
+pub async fn read_input(
+    history: &mut InputHistory,
+    fallback: &crate::confirm::CliInput,
+) -> Result<InputOutcome> {
+    let (_, rx) = event_bus();
+    drain_pending(rx).await;
+    let is_tty = std::io::stdin().is_tty() && std::io::stdout().is_tty();
+    if !is_tty {
+        let line = fallback.read_line("\n› ").await?;
+        return Ok(match line.trim() {
+            "" => InputOutcome::Exit,
+            t => InputOutcome::Submitted(t.to_string()),
+        });
+    }
+    boxed_input(history, rx).await
+}
+
+async fn boxed_input(
+    history: &mut InputHistory,
+    rx: &tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Event>>,
+) -> Result<InputOutcome> {
+    let _raw = RawGuard::new().map_err(LexError::Io)?;
+    let (term_w, _) = terminal::size().unwrap_or((100, 30));
+    let width = (term_w as usize).saturating_sub(6).min(76);
+
+    // 画盒:顶边 + 初始内容行 + 底边;光标回到内容行等待输入
+    anstream::println!("{}╭{}╮{}", theme::ACCENT, "─".repeat(width), theme::RESET);
+    let mut state = InputState::new(width);
+    redraw(&mut state, false);
+    anstream::println!("{}╰{}╯{}", theme::ACCENT, "─".repeat(width), theme::RESET);
+    crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveUp(1), crossterm::cursor::MoveToColumn(0))
+        .map_err(LexError::Io)?;
+
+    let mut ctrl_c_on_empty = false;
+    let mut rx = rx.lock().await;
+    loop {
+        let ev = rx.recv().await;
+        let Some(ev) = ev else { return Ok(InputOutcome::Exit) }; // 读线程终止
+        let Event::Key(key) = ev else { continue };
+        if key.kind != KeyEventKind::Press {
+            continue; // Windows 会发 Release 事件
+        }
+
+        let mut exit = false;
+        match (key.code, key.modifiers) {
+            (KeyCode::Enter, _) => {
+                let text = state.text();
+                close_box();
+                return Ok(InputOutcome::Submitted(text));
+            }
+            (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                if state.is_empty() {
+                    if ctrl_c_on_empty {
+                        exit = true;
+                    } else {
+                        ctrl_c_on_empty = true;
+                    }
+                } else {
+                    state.clear();
+                    ctrl_c_on_empty = false;
+                }
+            }
+            (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => exit = true,
+            (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
+                state.clear();
+                ctrl_c_on_empty = false;
+            }
+            (KeyCode::Backspace, _) => state.backspace(),
+            (KeyCode::Delete, _) => state.delete(),
+            (KeyCode::Left, _) => state.left(),
+            (KeyCode::Right, _) => state.right(),
+            (KeyCode::Home, _) => state.home(),
+            (KeyCode::End, _) => state.end(),
+            (KeyCode::Up, _) => {
+                let cur = state.text();
+                if let Some(s) = history.prev(&cur) {
+                    set_text(&mut state, &s);
+                }
+            }
+            (KeyCode::Down, _) => {
+                if let Some(s) = history.next() {
+                    set_text(&mut state, &s);
+                }
+            }
+            (KeyCode::Char(c), m)
+                if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
+            {
+                state.insert(c);
+                ctrl_c_on_empty = false;
+            }
+            _ => {}
+        }
+        if exit {
+            close_box();
+            return Ok(InputOutcome::Exit);
+        }
+        redraw(&mut state, ctrl_c_on_empty);
+    }
+}
+
+fn set_text(state: &mut InputState, s: &str) {
+    state.clear();
+    for c in s.chars() {
+        state.insert(c);
+    }
+}
+
+/// 重绘内容行:行首清行 → 蓝竖线 + › 提示符 + 视口文本 → 光标定位到 4+col+1 列
+fn redraw(state: &mut InputState, hint: bool) {
+    let (visible, col) = state.viewport();
+    let hint = if hint { theme::dim("  (再按一次 Ctrl+C 退出)") } else { String::new() };
+    anstream::print!(
+        "{}{}│{} › {}{}{}{}",
+        theme::CLEAR_LINE,
+        theme::ACCENT,
+        theme::RESET,
+        theme::ACCENT,
+        theme::RESET,
+        visible,
+        hint,
+    );
+    // "│ › " 前缀占 4 列(ANSI G 从 1 计)
+    anstream::print!("{}", theme::goto_col(4 + col + 1));
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+}
+
+/// 提交/退出收尾:光标下移到底边行并清除,后续输出从空行开始
+fn close_box() {
+    anstream::print!("\n{}", theme::CLEAR_LINE);
+    use std::io::Write;
+    std::io::stdout().flush().ok();
 }
 
 #[cfg(test)]
