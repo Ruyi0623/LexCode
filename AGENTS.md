@@ -24,7 +24,7 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 
 - **仓库路径含中文**(`D:\项目\`),GNU dlltool 不兼容 → `.cargo/config.toml` 已把 target-dir 重定向到 `D:/lexcode-target`。**不要删除该配置**。
 - 运行时按以下顺序查找系统提示词:配置 `system_prompt_path` → `<cwd>/assets/` → `<exe目录>/assets/`。对 release 二进制冒烟时需把 `assets/coding-agent-system-prompt.md` 复制到 exe 旁。
-- 配置优先级:env(`LEX_*`)> 项目级 `lex-code.toml` > 内置默认。**Key 只从环境变量读**(`LEX_ANTHROPIC_API_KEY`),TOML 不放凭证;base_url/model 必须显式配置,代码零硬编码默认 URL/模型。
+- 配置优先级:env(`LEX_*`)> 项目级 `lex-code.toml` > 内置默认。**Key 只从环境变量读**(`LEX_ANTHROPIC_API_KEY` / `LEX_OPENAI_API_KEY`),TOML 不放凭证;base_url/model 必须显式配置,代码零硬编码默认 URL/模型。本机已在用户级环境变量永久配置这两把 Key(同一把 DeepSeek Key,对 OpenAI 端点与 Anthropic 兼容端点通用),新终端可直接跑冒烟。
 
 ## 架构边界(依赖单向)
 
