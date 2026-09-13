@@ -127,6 +127,7 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
         context_limit: cfg.context.enabled.then_some(cfg.context.limit),
         pending_summary: None,
         compress_attempted: false,
+        on_tool_result: None,
     })
 }
 

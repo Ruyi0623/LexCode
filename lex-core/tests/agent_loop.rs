@@ -71,6 +71,7 @@ async fn two_turn_loop_reads_then_answers() {
         context_limit: None,
         pending_summary: None,
         compress_attempted: false,
+        on_tool_result: None,
     };
     loop_.registry.register(Box::new(FakeRead));
 
@@ -131,6 +132,7 @@ async fn denied_tool_result_feeds_back_and_model_can_finish() {
         context_limit: None,
         pending_summary: None,
         compress_attempted: false,
+        on_tool_result: None,
     };
     loop_.registry.register(Box::new(FakeWrite));
     let text = loop_.run_turn("改 a.txt", &mut |_| {}).await.unwrap();
@@ -162,6 +164,7 @@ async fn max_turns_exceeded_is_error() {
         context_limit: None,
         pending_summary: None,
         compress_attempted: false,
+        on_tool_result: None,
     };
     loop_.registry.register(Box::new(FakeRead));
     let err = loop_.run_turn("x", &mut |_| {}).await.unwrap_err();
@@ -202,6 +205,7 @@ fn slow_loop(scripts: Vec<Vec<ProviderEvent>>) -> AgentLoop {
         context_limit: None,
         pending_summary: None,
         compress_attempted: false,
+        on_tool_result: None,
     }
 }
 

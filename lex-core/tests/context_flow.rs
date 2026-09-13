@@ -83,6 +83,7 @@ fn make_loop(
         context_limit,
         pending_summary: None,
         compress_attempted: false,
+        on_tool_result: None,
     }
 }
 

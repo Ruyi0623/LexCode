@@ -17,6 +17,19 @@ pub enum State {
     ExecutingTools,
 }
 
+/// 工具执行结果回调信息(渲染 `⎿` 结果行用;CLI 可选订阅)
+pub struct ToolResultInfo {
+    pub tool_name: String,
+    pub first_line: String,
+    pub is_error: bool,
+}
+pub type ToolResultHook = Arc<dyn Fn(&ToolResultInfo) + Send + Sync>;
+
+/// 取工具结果首行(截断 160 字符),供活动行展示
+pub fn first_line_of(content: &str) -> String {
+    content.lines().next().unwrap_or_default().chars().take(160).collect()
+}
+
 pub struct AgentLoop {
     pub provider: Box<dyn Provider>,
     pub registry: ToolRegistry,
@@ -35,6 +48,8 @@ pub struct AgentLoop {
     pub pending_summary: Option<String>,
     /// 会话内压缩只触发一次(设计:跨阈值触发一次,不每轮反复)
     pub compress_attempted: bool,
+    /// 工具执行结果回调(可选;CLI 用于渲染 ⎿ 结果行)
+    pub on_tool_result: Option<ToolResultHook>,
 }
 
 impl AgentLoop {
@@ -138,6 +153,7 @@ impl AgentLoop {
                             results.push((id.as_str(), content, is_error));
                         }
                     }
+                    self.notify_results(&tool_uses, &results);
                 } else {
                     for (id, name, input) in &tool_uses {
                         let block = execute_tool_call(&self.registry, self.handler.as_ref(), &self.tool_ctx, &self.security, id, name, input.clone()).await;
@@ -145,6 +161,7 @@ impl AgentLoop {
                             results.push((id.as_str(), content, is_error));
                         }
                     }
+                    self.notify_results(&tool_uses, &results);
                 }
                 self.history.push(Message::tool_results(results));
                 continue; // 回到 AssemblingRequest,自动多轮
@@ -159,6 +176,20 @@ impl AgentLoop {
             final_blocks.push(Block::Text { text: final_text.clone() });
             self.history.push(Message::assistant(final_blocks));
             return Ok(final_text);
+        }
+    }
+
+    /// 通知订阅者工具执行结果(渲染 ⎿ 结果行);无订阅者时零开销
+    fn notify_results(&self, tool_uses: &[(String, String, serde_json::Value)], results: &[(&str, String, bool)]) {
+        let Some(hook) = &self.on_tool_result else { return };
+        for ((id, name, _), (rid, content, is_error)) in tool_uses.iter().zip(results) {
+            if id == rid {
+                hook(&ToolResultInfo {
+                    tool_name: name.clone(),
+                    first_line: first_line_of(content),
+                    is_error: *is_error,
+                });
+            }
         }
     }
 
@@ -201,5 +232,18 @@ impl AgentLoop {
                 self.history.splice(..0, early);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hooks {
+    use super::*;
+
+    #[test]
+    fn first_line_takes_first_line_and_truncates() {
+        assert_eq!(first_line_of("hello\nworld"), "hello");
+        let long: String = "x".repeat(300);
+        assert_eq!(first_line_of(&long).chars().count(), 160);
+        assert_eq!(first_line_of(""), "");
     }
 }
