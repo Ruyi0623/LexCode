@@ -10,7 +10,17 @@ pub struct Config {
     pub anthropic: AnthropicConfig,
     pub openai: OpenAiConfig,
     pub shell: ShellConfig,
+    pub security: SecurityConfig,
     pub max_turns: u32,
+}
+
+/// `[security]` 三级权限正则规则表(与内置默认合并;Forbidden 默认项不可移除)。
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct SecurityConfig {
+    pub forbidden: Vec<String>,
+    pub confirm: Vec<String>,
+    pub auto: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +63,7 @@ impl Default for Config {
             anthropic: AnthropicConfig::default(),
             openai: OpenAiConfig::default(),
             shell: ShellConfig::default(),
+            security: SecurityConfig::default(),
             max_turns: 50,
         }
     }

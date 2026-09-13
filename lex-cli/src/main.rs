@@ -10,9 +10,12 @@ use lex_core::provider::anthropic::AnthropicProvider;
 use lex_core::provider::openai_compat::OpenAiCompatProvider;
 use lex_core::provider::openai_types::OpenAiParams;
 use lex_core::provider::Provider;
+use lex_core::security::{SecurityGuard, SecurityRules};
 use lex_core::tools::bash_exec::BashExec;
 use lex_core::tools::file_edit::FileEdit;
 use lex_core::tools::file_read::FileRead;
+use lex_core::tools::grep_search::GrepSearch;
+use lex_core::tools::todo_write::TodoWrite;
 use lex_core::tools::{ShellCommand, ToolContext, ToolRegistry};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -90,6 +93,8 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
     registry.register(Box::new(FileRead));
     registry.register(Box::new(FileEdit));
     registry.register(Box::new(BashExec));
+    registry.register(Box::new(GrepSearch));
+    registry.register(Box::new(TodoWrite));
 
     let shell: Option<ShellCommand> = cfg.shell.command.clone().map(|command| ShellCommand {
         command,
@@ -102,6 +107,7 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
         registry,
         handler: Box::new(input),
         tool_ctx: ToolContext { cwd, shell, todos: Default::default() },
+        security: SecurityGuard::new(SecurityRules::build(&cfg.security)?),
         system,
         history: vec![],
         max_turns: cfg.max_turns,

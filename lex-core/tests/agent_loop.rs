@@ -3,7 +3,7 @@ use lex_core::agent::AgentLoop;
 use lex_core::error::{LexError, Result};
 use lex_core::message::{Block, Message};
 use lex_core::provider::{Provider, ProviderEvent, RequestContext, StreamResult};
-use lex_core::security::PermissionHandler;
+use lex_core::security::{PermissionHandler, SecurityGuard, SecurityRules};
 use lex_core::tools::{Tool, ToolContext, ToolRegistry};
 use serde_json::json;
 use std::path::PathBuf;
@@ -63,6 +63,7 @@ async fn two_turn_loop_reads_then_answers() {
         registry: ToolRegistry::new(),
         handler: Box::new(AllowAll),
         tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default() },
+        security: SecurityGuard::new(SecurityRules::defaults()),
         system: "sys".into(),
         history: vec![],
         max_turns: 5,
@@ -100,22 +101,32 @@ async fn denied_tool_result_feeds_back_and_model_can_finish() {
     impl PermissionHandler for Deny {
         async fn confirm(&self, _a: &lex_core::security::PendingAction) -> Result<bool> { Ok(false) }
     }
+    struct FakeWrite;
+    #[async_trait]
+    impl Tool for FakeWrite {
+        fn name(&self) -> &str { "file_edit" }
+        fn description(&self) -> &str { "w" }
+        fn schema(&self) -> serde_json::Value { json!({"type":"object"}) }
+        fn read_only(&self) -> bool { false }
+        async fn execute(&self, _i: serde_json::Value, _c: &ToolContext) -> Result<String> { Ok("已写入".into()) }
+    }
     let mock = MockProvider::new(vec![
-        tool_call_event("t1", "file_read", json!({"path":"a.txt"})),
-        vec![ProviderEvent::TextDelta("好的,不读了".into())],
+        tool_call_event("t1", "file_edit", json!({"path":"a.txt"})),
+        vec![ProviderEvent::TextDelta("好的,不写了".into())],
     ]);
     let mut loop_ = AgentLoop {
         provider: Box::new(mock),
         registry: ToolRegistry::new(),
         handler: Box::new(Deny),
         tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default() },
+        security: SecurityGuard::new(SecurityRules::defaults()),
         system: String::new(),
         history: vec![],
         max_turns: 5,
     };
-    loop_.registry.register(Box::new(FakeRead));
-    let text = loop_.run_turn("读 a.txt", &mut |_| {}).await.unwrap();
-    assert_eq!(text, "好的,不读了");
+    loop_.registry.register(Box::new(FakeWrite));
+    let text = loop_.run_turn("改 a.txt", &mut |_| {}).await.unwrap();
+    assert_eq!(text, "好的,不写了");
     match &loop_.history[2].content[0] {
         Block::ToolResult { content, is_error, .. } => {
             assert!(is_error);
@@ -135,6 +146,7 @@ async fn max_turns_exceeded_is_error() {
         registry: ToolRegistry::new(),
         handler: Box::new(AllowAll),
         tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default() },
+        security: SecurityGuard::new(SecurityRules::defaults()),
         system: String::new(),
         history: vec![],
         max_turns: 3,

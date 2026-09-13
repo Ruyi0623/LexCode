@@ -1,7 +1,7 @@
 use crate::error::{LexError, Result};
 use crate::message::{Block, Message};
 use crate::provider::{Provider, ProviderEvent, RequestContext};
-use crate::security::{execute_tool_call, PermissionHandler};
+use crate::security::{execute_tool_call, PermissionHandler, SecurityGuard};
 use crate::tools::{ToolContext, ToolRegistry};
 use futures::StreamExt;
 
@@ -19,6 +19,7 @@ pub struct AgentLoop {
     pub registry: ToolRegistry,
     pub handler: Box<dyn PermissionHandler>,
     pub tool_ctx: ToolContext,
+    pub security: SecurityGuard,
     pub system: String,
     pub history: Vec<Message>,
     pub max_turns: u32,
@@ -32,6 +33,8 @@ impl AgentLoop {
         on_event: &mut dyn FnMut(&ProviderEvent),
     ) -> Result<String> {
         self.history.push(Message::user_text(user_input));
+        // 当轮安全状态复位:敏感文件外发启发式以"同一轮"为判定窗口
+        self.security.reset_turn();
         let mut turns: u32 = 0;
 
         loop {
@@ -96,8 +99,8 @@ impl AgentLoop {
                 state_msg(State::ExecutingTools);
                 let mut results: Vec<(&str, String, bool)> = Vec::new();
                 for (id, name, input) in &tool_uses {
-                    // Phase 1:全部串行;只读并发在 Phase 3 引入
-                    let block = execute_tool_call(&self.registry, self.handler.as_ref(), &self.tool_ctx, id, name, input.clone()).await;
+                    // Phase 3 前置:全串行;只读并发在下方接线后引入
+                    let block = execute_tool_call(&self.registry, self.handler.as_ref(), &self.tool_ctx, &self.security, id, name, input.clone()).await;
                     if let Block::ToolResult { content, is_error, .. } = block {
                         results.push((id.as_str(), content, is_error));
                     }
