@@ -1,10 +1,9 @@
 mod confirm;
-mod render;
 mod ui;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use lex_core::agent::AgentLoop;
+use lex_core::agent::{AgentLoop, ToolResultHook};
 use lex_core::config::{resolve_api_key, Config};
 use lex_core::prompt::{load_system_prompt, render_template, resolve_system_prompt_path};
 use lex_core::context::agents_md::{assemble_system_prompt, load_agents_md};
@@ -22,6 +21,7 @@ use lex_core::tools::todo_write::TodoWrite;
 use lex_core::tools::{ShellCommand, ToolContext, ToolRegistry};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Parser)]
 #[command(name = "lex-code", version, about = "Lex Code — 终端编程 agent")]
@@ -69,7 +69,12 @@ fn build_system_prompt(cfg: &Config, cwd: &Path) -> Result<String> {
     Ok(render_template(&template, &vars))
 }
 
-fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInput>) -> Result<AgentLoop> {
+fn build_loop(
+    cfg: &Config,
+    cwd: PathBuf,
+    input: std::sync::Arc<confirm::CliInput>,
+    renderer: &Arc<Mutex<ui::events::Renderer>>,
+) -> Result<AgentLoop> {
     let api_key = resolve_api_key(&cfg.provider)?;
     // 切换 provider 只改配置,不改 Agent Loop:两者实现同一个 Provider trait
     let provider: Box<dyn Provider> = match cfg.provider.as_str() {
@@ -127,8 +132,24 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
         context_limit: cfg.context.enabled.then_some(cfg.context.limit),
         pending_summary: None,
         compress_attempted: false,
-        on_tool_result: None,
+        on_tool_result: Some(make_result_hook(renderer)),
     })
+}
+
+/// 工具结果回调:转发到共享渲染器打印 ⎿ 结果行
+fn make_result_hook(renderer: &Arc<Mutex<ui::events::Renderer>>) -> ToolResultHook {
+    let r = Arc::clone(renderer);
+    Arc::new(move |info| {
+        r.lock().unwrap_or_else(|p| p.into_inner()).tool_result(info);
+    })
+}
+
+fn current_model(cfg: &Config) -> String {
+    if cfg.provider == "openai" {
+        cfg.openai.model.clone()
+    } else {
+        cfg.anthropic.model.clone()
+    }
 }
 
 #[tokio::main]
@@ -155,46 +176,68 @@ async fn run() -> Result<()> {
     let cwd = std::fs::canonicalize(&cli.cwd).context("工作目录不存在")?;
     let cfg = Config::load(&cwd)?;
     let input = std::sync::Arc::new(confirm::CliInput::new());
-    let mut agent = build_loop(&cfg, cwd.clone(), input.clone())?;
+    let renderer = Arc::new(Mutex::new(ui::events::Renderer::new()));
+    let mut agent = build_loop(&cfg, cwd.clone(), input.clone(), &renderer)?;
 
     if cli.task.is_empty() {
-        interactive_session(&mut agent, &input).await
+        interactive_session(&mut agent, &input, &cfg, &cwd).await
     } else {
         let task = cli.task.join(" ");
-        let mut renderer = render::Renderer::new();
-        let text = agent.run_turn(&task, &mut |e| renderer.render(e)).await?;
+        let text = agent
+            .run_turn(&task, &mut |e| {
+                renderer.lock().unwrap_or_else(|p| p.into_inner()).render(e);
+            })
+            .await?;
         println!("\n{text}");
         Ok(())
     }
 }
 
-async fn interactive_session(agent: &mut AgentLoop, input: &confirm::CliInput) -> Result<()> {
-    anstream::println!("Lex Code 交互模式(输入任务,空行取消,Ctrl+C 退出)");
+async fn interactive_session(
+    agent: &mut AgentLoop,
+    input: &Arc<confirm::CliInput>,
+    cfg: &Config,
+    cwd: &Path,
+) -> Result<()> {
+    ui::banner::print(&cfg.provider, &current_model(cfg), cwd, &detect_project_type(cwd));
+    let renderer = Arc::new(Mutex::new(ui::events::Renderer::new()));
+    let mut history = ui::input::InputHistory::default();
 
     loop {
-        let line = tokio::select! {
-            l = input.read_line("\n› ") => l.context("读取输入失败")?,
-            _ = tokio::signal::ctrl_c() => {
+        let outcome = ui::input::read_input(&mut history, input).await?;
+        let line = match outcome {
+            ui::input::InputOutcome::Exit => {
                 anstream::println!("\n再见");
                 return Ok(());
             }
+            ui::input::InputOutcome::Submitted(t) => t,
         };
-
-        // EOF(如 Ctrl+D / 管道结束):优雅退出
-        if line.is_empty() {
-            anstream::println!("\n再见");
-            return Ok(());
-        }
-        let input = line.trim();
-        if input.is_empty() {
+        if line.trim().is_empty() {
             continue;
         }
-        let result = {
-            let mut renderer = render::Renderer::new();
-            agent.run_turn(input, &mut |e| renderer.render(e)).await
+        history.push(line.clone());
+
+        let r = Arc::clone(&renderer);
+        r.lock().unwrap_or_else(|p| p.into_inner()).thinking_hint();
+        let r2 = Arc::clone(&renderer);
+        let mut on_event = |e: &lex_core::provider::ProviderEvent| {
+            r2.lock().unwrap_or_else(|p| p.into_inner()).render(e);
+        };
+        let result = tokio::select! {
+            res = agent.run_turn(&line, &mut on_event) => res,
+            _ = tokio::signal::ctrl_c() => {
+                // 打断本轮:流被 drop(子进程经 kill_on_drop 终止),修复悬空 tool_use 后回输入盒
+                agent.recover_interrupt();
+                anstream::println!(
+                    "\n{}⏹ 已中断本轮任务,可继续输入{}",
+                    ui::theme::WARN,
+                    ui::theme::RESET
+                );
+                continue;
+            }
         };
         if let Err(e) = result {
-            anstream::println!("\n\x1b[31m本轮失败: {e}\x1b[0m");
+            anstream::println!("\n{}", ui::theme::error(&format!("本轮失败: {e}")));
             anstream::println!("(历史已保留,可直接继续描述或纠正)");
         }
     }

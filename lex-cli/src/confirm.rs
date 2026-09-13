@@ -49,10 +49,13 @@ impl Default for CliInput {
 #[async_trait]
 impl PermissionHandler for CliInput {
     async fn confirm(&self, action: &PendingAction) -> Result<bool> {
+        use crate::ui::theme;
         anstream::println!();
-        anstream::println!("⚠ 需要确认 [{}]:", action.tool_name);
+        anstream::println!("{}", theme::warn(&format!("⚠ 需要确认 [{}]", action.tool_name)));
         anstream::println!("{}", action.summary);
-        let answer = self.read_line("允许执行? [y/N] ").await?;
+        let answer = self
+            .read_line(&format!("{} 允许执行? [y/N] ", theme::accent("?")))
+            .await?;
         let answer = answer.trim().to_ascii_lowercase();
         Ok(answer == "y" || answer == "yes")
     }
