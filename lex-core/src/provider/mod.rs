@@ -71,6 +71,8 @@ pub(crate) fn truncate_body(s: &str) -> &str {
 }
 
 const MAX_RETRIES: u32 = 2;
+/// TCP 连接超时:连不上快速失败,避免无界阻塞(SSE 长流不受其影响)
+pub(crate) const CONNECT_TIMEOUT_SECS: u64 = 30;
 
 /// 发送 chat/completions 请求并对可重试错误(429/500/503)自动退避重试。
 /// 重试只发生在流开始之前;payload 由调用方预序列化,保证每次重试字节一致。

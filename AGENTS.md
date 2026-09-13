@@ -1,6 +1,6 @@
 # Lex Code — Agent 指引
 
-类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)、Phase 4(AGENTS.md 注入 + 上下文压缩 + 前缀缓存校验/遥测)均已完成并真实联调;Phase 5 见下方路线图。
+类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)、Phase 4(AGENTS.md 注入 + 上下文压缩 + 前缀缓存校验/遥测)均已完成并真实联调;Phase 5(错误边界、可观测性、配置文档)已完成,全部阶段收尾,见下方路线图。
 
 目录:`lex-core/src/` 核心库(message / provider / agent / tools / security / context / config / prompt)、`lex-cli/src/` 终端 UI(main / render / confirm)、`docs/` 设计文档与需求任务书、`examples/smoke/` 真实联调步骤、`assets/` 运行时系统提示词、`tests/`(位于各 crate)按真实抓包/mock 固化回归。
 
@@ -8,6 +8,7 @@
 
 - `docs/superpowers/specs/2026-09-12-lex-code-design.md` — 权威设计文档(架构、三级权限、缓存策略、三平台适配)
 - `docs/requirements/harness-dev-brief-for-claude-code.md` — 原始需求任务书(分阶段交付与非功能硬约束)
+- `README.md` — 使用与配置文档(lex-code.toml 全字段、环境变量、三级权限、LEX_LOG 可观测性)
 - `examples/smoke/README.md` — 真实 API 冒烟步骤与联调结论
 - `assets/coding-agent-system-prompt.md` — 运行时系统提示词(外部资源,**禁止**把内容硬编码进代码)
 
@@ -55,6 +56,6 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 - ~~Phase 2:抽 Provider 泛化落定 + `OpenAICompatibleAdapter`~~(已完成并通过 DeepSeek 端点真实冒烟,见 `examples/smoke/README.md` 第 7 节)。
 - ~~Phase 3:grep_search / todo_write、三级权限、只读并发~~(已完成,见 `examples/smoke/README.md` 第 8 节)。
 - ~~Phase 4:AGENTS.md、压缩触发、`ImplicitPrefixCacheStrategy`~~(已完成并通过 DeepSeek 端点真实冒烟,见 `examples/smoke/README.md` 第 9 节)。压缩要点:阈值 `context.limit × 0.8`、**会话内只成功触发一次**(无可切分历史/摘要失败不消耗机会)、摘要并入下一条 user 消息(保持角色交替,Anthropic 端点要求)、`[context]` 段 limit(默认 64000)/enabled 可配。
-- Phase 5:错误边界打磨、可观测性、配置文档。
+- ~~Phase 5:错误边界打磨、可观测性、配置文档~~(已完成:provider 客户端 connect_timeout 防无界阻塞;`execute_tool_call` 记录工具耗时/结果日志;日志级别 `LEX_LOG` > `RUST_LOG` > warn(仅 stderr,不污染渲染);根目录 `README.md` 覆盖配置全字段、环境变量、安全模型、日志事件表)。
 
 不做:GUI/IDE 插件、服务化、CI/CD、sub-agent 实现(仅预留 `ToolRegistry` 扩展点)。

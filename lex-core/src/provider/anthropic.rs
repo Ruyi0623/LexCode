@@ -53,8 +53,11 @@ impl AnthropicProvider {
     }
 
     /// 便捷构造:内部建 reqwest::Client(lex-cli 不直接依赖 reqwest)。
+    /// 只设连接超时:TCP 连不上时快速失败;不设读取超时,SSE 长流不能被总超时截断。
     pub fn with_defaults(base_url: String, model: String, max_tokens: u32, api_key: String) -> Result<Self> {
-        let http = reqwest::Client::builder().build()?;
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(super::CONNECT_TIMEOUT_SECS))
+            .build()?;
         Ok(AnthropicProvider::new(http, base_url, model, max_tokens, api_key))
     }
 }

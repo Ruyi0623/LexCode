@@ -139,10 +139,14 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    // 日志级别:LEX_LOG > RUST_LOG > 默认 warn(全部写到 stderr,不污染终端渲染)
+    let filter = std::env::var("LEX_LOG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| std::env::var("RUST_LOG").ok())
+        .unwrap_or_else(|| "warn".into());
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
         .with_writer(std::io::stderr)
         .init();
 

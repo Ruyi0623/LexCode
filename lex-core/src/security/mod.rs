@@ -126,9 +126,20 @@ pub async fn execute_tool_call(
     }
     note_read(guard, tool_name, &input);
 
-    match tool.execute(input, ctx).await {
+    let started = std::time::Instant::now();
+    let result = tool.execute(input, ctx).await;
+    tracing::info!(
+        tool_name,
+        duration_ms = started.elapsed().as_millis() as u64,
+        is_error = result.is_err(),
+        "工具执行完成"
+    );
+    match result {
         Ok(content) => Block::ToolResult { tool_use_id: call_id.to_string(), content, is_error: false },
-        Err(e) => Block::ToolResult { tool_use_id: call_id.to_string(), content: format!("{e}"), is_error: true },
+        Err(e) => {
+            tracing::warn!(tool_name, error = %e, "工具执行失败,已降级为错误 ToolResult 回填模型");
+            Block::ToolResult { tool_use_id: call_id.to_string(), content: format!("{e}"), is_error: true }
+        }
     }
 }
 
