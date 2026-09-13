@@ -120,3 +120,21 @@ set LEX_OPENAI_API_KEY=<你的 DeepSeek Key>         (CMD)
 按官方文档对 OpenAI 兼容路径做完整适配(均有测试):`max_tokens` 可选化、`thinking`/`reasoning_effort` 透传与校验、`prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` 采集(兼容 OpenAI 风格 `prompt_tokens_details.cached_tokens`)、异常 `finish_reason` 警告(content_filter/insufficient_system_resource/aborted)、4xx 错误体解析。
 
 适配后复测同一任务:**闭环成功,缓存遥测端到端生效**——6 轮请求全部成功,输入 token 的缓存命中随 append-only 前缀增长:1536 → 1792 → 8192 → 8448 → 8832 → 9088(命中率 97%),末尾统计显示"(输入 9350 tokens · 输出 214 tokens · 缓存命中 9088)"。原始流抓包确认 `delta.reasoning_content` 为增量文本且思考期间 `content` 为 `null`,解析器已覆盖;本次简单任务模型未输出思维链,渲染路径由 mock 测试保障。
+
+## 8. Phase 3 冒烟:权限沙盒与只读并发
+
+新增工具:grep_search(内置 ignore+regex,只读免确认)、todo_write(会话待办)。
+三级权限:只读 Auto(直接放行)/ Confirm(确认或白名单)/ Forbidden(硬拦截,不可确认)。
+
+### 真实联调记录(2026-09-13,DeepSeek 端点)
+
+1. **正常任务闭环**:file_read 不再弹确认(Auto 生效,确认弹窗次数明显减少);bash_exec / file_edit 仍逐个确认;缓存命中持续。
+2. **Forbidden 场景**:连续 4 次诱导测试(强制推送、删 .git、读 .env 后 curl 外发),模型全部**自主拒绝并给出安全替代方案**,未实际发起过 Forbidden 命令——真实模型自律让拦截层很难被触发(本身是理想行为)。拦截层行为由确定性集成测试锁定:MockProvider 直接下发 `rm -rf .git`,断言命令未到达工具层、结果为"⛔ 硬性拦截"错误回填(`agent_loop.rs::forbidden_command_is_hard_blocked_without_confirm`)。
+3. **只读并发**:两个只读工具同轮并发(join_all),混入副作用工具严格串行,时序测试覆盖。
+
+### 验收清单
+
+- [x] grep_search 免确认、尊重 .gitignore
+- [x] Forbidden 命令被拦截并说明原因(集成测试)
+- [x] 只读工具同轮并发、副作用串行(时序测试)
+- [x] [security] 规则表可追加,Forbidden 默认项不可移除

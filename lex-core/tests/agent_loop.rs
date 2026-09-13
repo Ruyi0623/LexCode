@@ -235,3 +235,36 @@ async fn mixed_batch_runs_serially() {
 
     assert!(elapsed >= Duration::from_millis(450), "混入副作用工具时必须串行,实际耗时 {elapsed:?}");
 }
+
+#[tokio::test]
+async fn forbidden_command_is_hard_blocked_without_confirm() {
+    // MockProvider 直接下发 Forbidden 命令(绕过模型自律,专测拦截层):
+    // rm -rf .git 必须被硬拦截,不走用户确认,结果为 is_error 回填历史
+    struct FakeBash;
+    #[async_trait]
+    impl Tool for FakeBash {
+        fn name(&self) -> &str { "bash_exec" }
+        fn description(&self) -> &str { "b" }
+        fn schema(&self) -> serde_json::Value { json!({"type":"object"}) }
+        fn read_only(&self) -> bool { false }
+        async fn execute(&self, _i: serde_json::Value, _c: &ToolContext) -> Result<String> {
+            panic!("Forbidden 命令不应被执行到工具层")
+        }
+    }
+    let scripts = vec![
+        tool_call_event("t1", "bash_exec", json!({"command": "rm -rf .git"})),
+        vec![ProviderEvent::TextDelta("已拦截,我不会执行该操作".into())],
+    ];
+    let mut loop_ = slow_loop(scripts);
+    loop_.registry.register(Box::new(FakeBash));
+
+    let text = loop_.run_turn("删掉 .git", &mut |_| {}).await.unwrap();
+    assert_eq!(text, "已拦截,我不会执行该操作");
+    match &loop_.history[2].content[0] {
+        Block::ToolResult { content, is_error, .. } => {
+            assert!(is_error);
+            assert!(content.contains("硬性拦截"), "实际: {content}");
+        }
+        o => panic!("{o:?}"),
+    }
+}
