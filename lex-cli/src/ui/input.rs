@@ -219,13 +219,15 @@ async fn boxed_input(
 ) -> Result<InputOutcome> {
     let _raw = RawGuard::new().map_err(LexError::Io)?;
     let (term_w, _) = terminal::size().unwrap_or((100, 30));
-    let width = (term_w as usize).saturating_sub(6).min(76);
+    let width = (term_w as usize).saturating_sub(2).min(100);
 
-    // 画盒:顶边 + 初始内容行 + 底边;光标回到内容行等待输入
-    anstream::println!("{}╭{}╮{}", theme::ACCENT, "─".repeat(width), theme::RESET);
+    // 画盒:顶边 + 初始内容行 + 底边;光标回到内容行等待输入。
+    // raw mode 下 \n 只下移不回车,盒子绘制阶段的换行必须显式 \r\n。
+    anstream::print!("{}╭{}╮{}", theme::ACCENT, "─".repeat(width), theme::RESET);
+    anstream::print!("\r\n");
     let mut state = InputState::new(width);
     redraw(&mut state, false);
-    anstream::println!("{}╰{}╯{}", theme::ACCENT, "─".repeat(width), theme::RESET);
+    anstream::print!("\r\n{}╰{}╯{}", theme::ACCENT, "─".repeat(width), theme::RESET);
     crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveUp(1), crossterm::cursor::MoveToColumn(0))
         .map_err(LexError::Io)?;
 
@@ -324,8 +326,9 @@ fn redraw(state: &mut InputState, hint: bool) {
 }
 
 /// 提交/退出收尾:光标下移到底边行并清除,后续输出从空行开始
+/// (raw mode 期间调用,换行显式 \r\n)
 fn close_box() {
-    anstream::print!("\n{}", theme::CLEAR_LINE);
+    anstream::print!("\r\n{}", theme::CLEAR_LINE);
     use std::io::Write;
     std::io::stdout().flush().ok();
 }
