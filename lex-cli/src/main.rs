@@ -101,7 +101,7 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
         provider,
         registry,
         handler: Box::new(input),
-        tool_ctx: ToolContext { cwd, shell },
+        tool_ctx: ToolContext { cwd, shell, todos: Default::default() },
         system,
         history: vec![],
         max_turns: cfg.max_turns,

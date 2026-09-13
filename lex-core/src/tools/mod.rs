@@ -1,10 +1,13 @@
 pub mod bash_exec;
 pub mod file_edit;
 pub mod file_read;
+pub mod grep_search;
+pub mod todo_write;
 
 use crate::error::Result;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct ShellCommand {
@@ -12,10 +15,52 @@ pub struct ShellCommand {
     pub args: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TodoStatus {
+    pub fn parse(s: &str) -> Option<TodoStatus> {
+        match s {
+            "pending" => Some(TodoStatus::Pending),
+            "in_progress" => Some(TodoStatus::InProgress),
+            "completed" => Some(TodoStatus::Completed),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TodoStatus::Pending => "pending",
+            TodoStatus::InProgress => "in_progress",
+            TodoStatus::Completed => "completed",
+        }
+    }
+
+    fn checkbox(&self) -> char {
+        match self {
+            TodoStatus::Pending => '☐',
+            TodoStatus::InProgress => '◐',
+            TodoStatus::Completed => '☑',
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
+pub struct Todo {
+    pub content: String,
+    pub status: TodoStatus,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub shell: Option<ShellCommand>,
+    /// 会话级待办清单(todo_write 的存储;不落盘,生命周期同 AgentLoop)
+    pub todos: Arc<Mutex<Vec<Todo>>>,
 }
 
 #[async_trait::async_trait]
