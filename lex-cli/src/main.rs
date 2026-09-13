@@ -22,6 +22,7 @@ use lex_core::tools::{ShellCommand, ToolContext, ToolRegistry};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use crossterm::tty::IsTty;
 
 #[derive(Parser)]
 #[command(name = "lex-code", version, about = "Lex Code — 终端编程 agent")]
@@ -152,6 +153,11 @@ fn current_model(cfg: &Config) -> String {
     }
 }
 
+/// canonicalize 产生的 `\\?\` 前缀只用于显示清理(Windows 扩展长度路径标记)
+fn display_path(p: &Path) -> String {
+    p.to_string_lossy().trim_start_matches(r"\\?\").to_string()
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
@@ -171,6 +177,8 @@ async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
         .with_writer(std::io::stderr)
+        // stderr 非 TTY(管道/重定向)时关 ANSI,避免裸转义码
+        .with_ansi(std::io::stderr().is_tty())
         .init();
 
     let cwd = std::fs::canonicalize(&cli.cwd).context("工作目录不存在")?;
@@ -199,7 +207,7 @@ async fn interactive_session(
     cfg: &Config,
     cwd: &Path,
 ) -> Result<()> {
-    ui::banner::print(&cfg.provider, &current_model(cfg), cwd, &detect_project_type(cwd));
+    ui::banner::print(&cfg.provider, &current_model(cfg), &display_path(cwd), &detect_project_type(cwd));
     let renderer = Arc::new(Mutex::new(ui::events::Renderer::new()));
     let mut history = ui::input::InputHistory::default();
 

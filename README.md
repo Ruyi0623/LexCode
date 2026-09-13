@@ -4,6 +4,7 @@
 
 - 单一 Agent Loop,只改配置即可在 Claude 端点与 DeepSeek 等 OpenAI 兼容端点间切换
 - 全链路 SSE 流式:思考、正文、工具调用增量渲染
+- 仿 Claude Code 终端界面:蓝色主题启动画面、圆角输入盒(逐键编辑 / ↑↓ 历史)、工具活动行(`● 工具(参数)` + `⎿ 结果首行`)、任务执行中 Ctrl+C 可打断不退出
 - 三级权限沙盒(Auto / Confirm / Forbidden),危险命令硬拦截不可绕过
 - 内置 5 个工具:`file_read` / `file_edit` / `bash_exec` / `grep_search` / `todo_write`
 - AGENTS.md 项目指引自动注入、上下文自动压缩、前缀缓存一致性校验与命中率遥测
@@ -53,6 +54,8 @@ lex-code 修复 tests/foo.rs 里的失败用例   # 一次性任务,完成后退
 lex-code                                  # 交互模式(REPL)
 lex-code -C D:/my/project 梳理项目结构     # 指定工作目录
 ```
+
+交互模式提供仿 Claude Code 的终端界面:蓝色主题启动画面、圆角输入盒(`↑↓` 翻历史、`Ctrl+C` 清空/退出、`Ctrl+D` 退出)、工具活动行(`● 工具(参数)` + `⎿ 结果首行`)与 token 尾注;任务执行中按 `Ctrl+C` 可打断当前轮(自动清理历史,可直接继续)。管道/重定向(非 TTY)自动降级为行式输入。
 
 ## 配置参考
 
@@ -117,7 +120,7 @@ LEX_LOG=debug lex-code ...   # 追加 agent 状态机转移
 | 事件 | 级别 |
 | --- | --- |
 | 工具执行完成(名称/耗时/是否错误) | info |
-| 工具执行失败,降级为错误 ToolResult | warn |
+| 工具执行失败,降级为错误 ToolResult(属 agent 常规反馈) | debug |
 | Forbidden 规则硬性拦截 | warn |
 | 已读取敏感文件,同轮网络外发将被拦截 | warn |
 | 服务端可重试错误自动退避(429/500/503) | warn |

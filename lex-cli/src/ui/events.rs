@@ -1,18 +1,22 @@
 use lex_core::agent::ToolResultInfo;
+use lex_core::message::Usage;
 use lex_core::provider::ProviderEvent;
 use serde_json::Value;
 
 use crate::ui::theme;
 
 /// 有状态事件渲染器:思考流分轨、工具活动行(● 工具(摘要)+ ⎿ 结果首行)、token 尾注。
+/// 带工具调用的轮次,其 token 尾注延迟到全部 ⎿ 结果行之后打印(保持阅读时序)。
 pub struct Renderer {
     in_thinking: bool,
     hint_visible: bool,
+    pending_tools: usize,
+    pending_usage: Option<Usage>,
 }
 
 impl Renderer {
     pub fn new() -> Self {
-        Renderer { in_thinking: false, hint_visible: false }
+        Renderer { in_thinking: false, hint_visible: false, pending_tools: 0, pending_usage: None }
     }
 
     fn flush() {
@@ -49,6 +53,32 @@ impl Renderer {
         } else {
             anstream::println!("  {}⎿ {}{}", theme::DIM, info.first_line, theme::RESET);
         }
+        self.pending_tools = self.pending_tools.saturating_sub(1);
+        if self.pending_tools == 0 {
+            self.flush_pending_usage();
+        }
+    }
+
+    /// 打印延迟的轮次 token 尾注(若未收到 Completed 则无事发生)
+    fn flush_pending_usage(&mut self) {
+        if let Some(usage) = self.pending_usage.take() {
+            self.print_usage(&usage);
+        }
+    }
+
+    fn print_usage(&mut self, usage: &Usage) {
+        anstream::println!();
+        if usage.cache_hit_tokens > 0 {
+            anstream::println!(
+                "{}(输入 {} tokens · 输出 {} tokens · 缓存命中 {}){}",
+                theme::DIM, usage.input_tokens, usage.output_tokens, usage.cache_hit_tokens, theme::RESET
+            );
+        } else {
+            anstream::println!(
+                "{}(输入 {} tokens · 输出 {} tokens){}",
+                theme::DIM, usage.input_tokens, usage.output_tokens, theme::RESET
+            );
+        }
     }
 
     pub fn render(&mut self, event: &ProviderEvent) {
@@ -73,6 +103,7 @@ impl Renderer {
             ProviderEvent::ToolUseComplete { name, input, .. } => {
                 self.erase_hint();
                 self.break_thinking();
+                self.pending_tools += 1;
                 let summary = summarize(name, input);
                 anstream::println!(
                     "{}●{} {}",
@@ -84,17 +115,11 @@ impl Renderer {
             ProviderEvent::Completed { usage } => {
                 self.erase_hint();
                 self.break_thinking();
-                anstream::println!();
-                if usage.cache_hit_tokens > 0 {
-                    anstream::println!(
-                        "{}(输入 {} tokens · 输出 {} tokens · 缓存命中 {}){}",
-                        theme::DIM, usage.input_tokens, usage.output_tokens, usage.cache_hit_tokens, theme::RESET
-                    );
+                if self.pending_tools > 0 {
+                    // 轮次带工具调用:尾注等 ⎿ 结果行打完再出,保持阅读时序
+                    self.pending_usage = Some(usage.clone());
                 } else {
-                    anstream::println!(
-                        "{}(输入 {} tokens · 输出 {} tokens){}",
-                        theme::DIM, usage.input_tokens, usage.output_tokens, theme::RESET
-                    );
+                    self.print_usage(usage);
                 }
             }
         }

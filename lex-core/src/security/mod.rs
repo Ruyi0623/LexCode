@@ -137,7 +137,8 @@ pub async fn execute_tool_call(
     match result {
         Ok(content) => Block::ToolResult { tool_use_id: call_id.to_string(), content, is_error: false },
         Err(e) => {
-            tracing::warn!(tool_name, error = %e, "工具执行失败,已降级为错误 ToolResult 回填模型");
+            // 工具报错是 agent 常规反馈(如读不存在的文件),降 debug 避免默认级别噪音
+            tracing::debug!(tool_name, error = %e, "工具执行失败,已降级为错误 ToolResult 回填模型");
             Block::ToolResult { tool_use_id: call_id.to_string(), content: format!("{e}"), is_error: true }
         }
     }

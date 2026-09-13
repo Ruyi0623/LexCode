@@ -2,7 +2,7 @@
 
 类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)、Phase 4(AGENTS.md 注入 + 上下文压缩 + 前缀缓存校验/遥测)均已完成并真实联调;Phase 5(错误边界、可观测性、配置文档)已完成,全部阶段收尾,见下方路线图。
 
-目录:`lex-core/src/` 核心库(message / provider / agent / tools / security / context / config / prompt)、`lex-cli/src/` 终端 UI(main / render / confirm)、`docs/` 设计文档与需求任务书、`examples/smoke/` 真实联调步骤、`assets/` 运行时系统提示词、`tests/`(位于各 crate)按真实抓包/mock 固化回归。
+目录:`lex-core/src/` 核心库(message / provider / agent / tools / security / context / config / prompt)、`lex-cli/src/` 终端 UI(main / confirm / ui:theme / banner / input / events)、`docs/` 设计文档与需求任务书、`examples/smoke/` 真实联调步骤、`assets/` 运行时系统提示词、`tests/`(位于各 crate)按真实抓包/mock 固化回归。
 
 ## 必读文档
 
