@@ -8,6 +8,7 @@ pub struct Config {
     pub provider: String,
     pub system_prompt_path: Option<String>,
     pub anthropic: AnthropicConfig,
+    pub openai: OpenAiConfig,
     pub shell: ShellConfig,
     pub max_turns: u32,
 }
@@ -15,6 +16,14 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AnthropicConfig {
+    pub base_url: String,
+    pub model: String,
+    pub max_tokens: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct OpenAiConfig {
     pub base_url: String,
     pub model: String,
     pub max_tokens: u32,
@@ -33,6 +42,7 @@ impl Default for Config {
             provider: "anthropic".into(),
             system_prompt_path: None,
             anthropic: AnthropicConfig::default(),
+            openai: OpenAiConfig::default(),
             shell: ShellConfig::default(),
             max_turns: 50,
         }
@@ -42,6 +52,12 @@ impl Default for Config {
 impl Default for AnthropicConfig {
     fn default() -> Self {
         AnthropicConfig { base_url: String::new(), model: String::new(), max_tokens: 8192 }
+    }
+}
+
+impl Default for OpenAiConfig {
+    fn default() -> Self {
+        OpenAiConfig { base_url: String::new(), model: String::new(), max_tokens: 8192 }
     }
 }
 
@@ -61,20 +77,29 @@ impl Config {
         if let Some(url) = env_option(&format!("{env_prefix}_ANTHROPIC_BASE_URL")) {
             cfg.anthropic.base_url = url;
         }
-        if cfg.anthropic.base_url.is_empty() {
-            return Err(LexError::Config(
-                "缺少 Anthropic base_url:请在 lex-code.toml 的 [anthropic] 段设置 base_url,或设置环境变量 LEX_ANTHROPIC_BASE_URL(本项目不允许内置默认 URL)".into(),
-            ));
+        if let Some(url) = env_option(&format!("{env_prefix}_OPENAI_BASE_URL")) {
+            cfg.openai.base_url = url;
         }
-        if cfg.anthropic.model.is_empty() {
-            return Err(LexError::Config(
-                "缺少模型名:请在 lex-code.toml 的 [anthropic] 段设置 model(本项目不允许内置默认模型)".into(),
-            ));
-        }
-        if cfg.provider != "anthropic" {
+        if !matches!(cfg.provider.as_str(), "anthropic" | "openai") {
             return Err(LexError::Config(format!(
-                "Phase 1 仅支持 provider = \"anthropic\",当前为 \"{}\"",
+                "不支持的 provider \"{}\":可选 \"anthropic\" 或 \"openai\"(OpenAI 兼容端点)",
                 cfg.provider
+            )));
+        }
+        // 校验当前所选 provider 自己的配置段;另一段允许留空(切换 provider 只改配置)
+        let (section, base_url, model) = if cfg.provider == "anthropic" {
+            ("[anthropic]", cfg.anthropic.base_url.clone(), cfg.anthropic.model.clone())
+        } else {
+            ("[openai]", cfg.openai.base_url.clone(), cfg.openai.model.clone())
+        };
+        if base_url.is_empty() {
+            return Err(LexError::Config(format!(
+                "缺少 base_url:请在 lex-code.toml 的 {section} 段设置 base_url,或设置对应的环境变量(本项目不允许内置默认 URL)"
+            )));
+        }
+        if model.is_empty() {
+            return Err(LexError::Config(format!(
+                "缺少模型名:请在 lex-code.toml 的 {section} 段设置 model(本项目不允许内置默认模型)"
             )));
         }
         Ok(cfg)
@@ -83,6 +108,7 @@ impl Config {
     pub fn api_key_env(provider: &str) -> &'static str {
         match provider {
             "anthropic" => "LEX_ANTHROPIC_API_KEY",
+            "openai" => "LEX_OPENAI_API_KEY",
             _ => "LEX_API_KEY",
         }
     }
@@ -146,5 +172,52 @@ mod tests {
         unsafe { std::env::set_var("LEX_TEST_ANTHROPIC_BASE_URL", "http://127.0.0.1:8") };
         let cfg = Config::load_with_env_prefix(&d, "LEX_TEST").unwrap();
         assert_eq!(cfg.anthropic.base_url, "http://127.0.0.1:8");
+    }
+
+    #[test]
+    fn openai_provider_requires_its_own_base_url_and_model() {
+        let d = temp_dir("openai-empty");
+        fs::write(d.join("lex-code.toml"), "provider = \"openai\"\n").unwrap();
+        let err = Config::load(&d).unwrap_err();
+        assert!(err.to_string().contains("base_url"), "实际: {err}");
+
+        let d2 = temp_dir("openai-full");
+        fs::write(
+            d2.join("lex-code.toml"),
+            "provider = \"openai\"\n[openai]\nbase_url = \"http://127.0.0.1:7\"\nmodel = \"deepseek-test\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&d2).unwrap();
+        assert_eq!(cfg.openai.model, "deepseek-test");
+        assert_eq!(cfg.openai.max_tokens, 8192);
+        // anthropic 段未配置时不得误用 openai 的 base_url 通过校验
+        assert_eq!(cfg.anthropic.base_url, "");
+    }
+
+    #[test]
+    fn env_overrides_openai_base_url() {
+        let d = temp_dir("openai-env");
+        fs::write(
+            d.join("lex-code.toml"),
+            "provider = \"openai\"\n[openai]\nbase_url = \"http://127.0.0.1:7\"\nmodel = \"m\"\n",
+        )
+        .unwrap();
+        unsafe { std::env::set_var("LEX_TEST_OPENAI_BASE_URL", "http://127.0.0.1:6") };
+        let cfg = Config::load_with_env_prefix(&d, "LEX_TEST").unwrap();
+        assert_eq!(cfg.openai.base_url, "http://127.0.0.1:6");
+    }
+
+    #[test]
+    fn unknown_provider_is_rejected() {
+        let d = temp_dir("unknown-provider");
+        fs::write(d.join("lex-code.toml"), "provider = \"gemini\"\n").unwrap();
+        let err = Config::load(&d).unwrap_err();
+        assert!(err.to_string().contains("provider"), "实际: {err}");
+    }
+
+    #[test]
+    fn api_key_env_per_provider() {
+        assert_eq!(Config::api_key_env("anthropic"), "LEX_ANTHROPIC_API_KEY");
+        assert_eq!(Config::api_key_env("openai"), "LEX_OPENAI_API_KEY");
     }
 }
