@@ -7,6 +7,10 @@ pub const ERROR: &str = "\x1b[31m";
 pub const WARN: &str = "\x1b[33m";
 pub const SUCCESS: &str = "\x1b[32m";
 pub const THINKING: &str = "\x1b[2;3m";
+pub const BOLD: &str = "\x1b[1m";
+pub const ITALIC: &str = "\x1b[3m";
+/// 亮青:行内代码
+pub const CODE: &str = "\x1b[96m";
 pub const RESET: &str = "\x1b[0m";
 /// 回到行首并清除整行(重绘内容行用)
 pub const CLEAR_LINE: &str = "\r\x1b[2K";
@@ -28,6 +32,9 @@ pub fn warn(s: &str) -> String {
 }
 pub fn success(s: &str) -> String {
     format!("{SUCCESS}{s}{RESET}")
+}
+pub fn bold(s: &str) -> String {
+    format!("{BOLD}{s}{RESET}")
 }
 /// 光标定位到第 n 列(ANSI G 序列,1-based)
 pub fn goto_col(n: usize) -> String {

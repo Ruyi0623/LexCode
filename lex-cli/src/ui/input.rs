@@ -246,7 +246,7 @@ async fn boxed_input(
         match (key.code, key.modifiers) {
             (KeyCode::Enter, _) => {
                 let text = state.text();
-                close_box();
+                collapse_box(&text);
                 return Ok(InputOutcome::Submitted(text));
             }
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -292,7 +292,7 @@ async fn boxed_input(
             _ => {}
         }
         if exit {
-            close_box();
+            erase_box();
             return Ok(InputOutcome::Exit);
         }
         redraw(&mut state, ctrl_c_on_empty);
@@ -326,10 +326,41 @@ fn redraw(state: &mut InputState, hint: bool) {
     std::io::stdout().flush().ok();
 }
 
-/// 提交/退出收尾:光标下移到底边行并清除,后续输出从空行开始
-/// (raw mode 期间调用,换行显式 \r\n)
-fn close_box() {
+/// 提交收尾:拆掉上下边框,内容行改写为无框的 `› 文本` 回执(仿 Claude Code),
+/// 光标落在回执下方的空行,后续输出从那里继续。
+fn collapse_box(text: &str) {
+    // 1) 内容行去框,保留回执
+    anstream::print!("{}{}› {}{}", theme::CLEAR_LINE, theme::DIM, text, theme::RESET);
+    // 2) 下移清除底边框;这条空行就是后续输出的起点
     anstream::print!("\r\n{}", theme::CLEAR_LINE);
+    // 3) 上移清除顶边框
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::cursor::MoveUp(2),
+        crossterm::cursor::MoveToColumn(0)
+    );
+    anstream::print!("{}", theme::CLEAR_LINE);
+    // 4) 光标回到输出行(原底边行)
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::cursor::MoveDown(2),
+        crossterm::cursor::MoveToColumn(0)
+    );
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+}
+
+/// 退出收尾:盒子三行(顶边/内容/底边)全部清除,不留残框
+fn erase_box() {
+    anstream::print!("{}", theme::CLEAR_LINE); // 内容行
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::cursor::MoveUp(1),
+        crossterm::cursor::MoveToColumn(0)
+    );
+    anstream::print!("{}", theme::CLEAR_LINE); // 顶边
+    anstream::print!("\r\n{}", theme::CLEAR_LINE); // 回内容行
+    anstream::print!("\r\n{}", theme::CLEAR_LINE); // 底边
     use std::io::Write;
     std::io::stdout().flush().ok();
 }

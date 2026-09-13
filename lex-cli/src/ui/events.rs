@@ -3,20 +3,29 @@ use lex_core::message::Usage;
 use lex_core::provider::ProviderEvent;
 use serde_json::Value;
 
+use crate::ui::markdown::MarkdownStream;
 use crate::ui::theme;
 
-/// 有状态事件渲染器:思考流分轨、工具活动行(● 工具(摘要)+ ⎿ 结果首行)、token 尾注。
+/// 有状态事件渲染器:思考流分轨、工具活动行(● 工具(摘要)+ ⎿ 结果首行)、
+/// token 尾注、Markdown 适配(行缓冲,整行输出)。
 /// 带工具调用的轮次,其 token 尾注延迟到全部 ⎿ 结果行之后打印(保持阅读时序)。
 pub struct Renderer {
     in_thinking: bool,
     hint_visible: bool,
     pending_tools: usize,
     pending_usage: Option<Usage>,
+    md: MarkdownStream,
 }
 
 impl Renderer {
     pub fn new() -> Self {
-        Renderer { in_thinking: false, hint_visible: false, pending_tools: 0, pending_usage: None }
+        Renderer {
+            in_thinking: false,
+            hint_visible: false,
+            pending_tools: 0,
+            pending_usage: None,
+            md: MarkdownStream::new(),
+        }
     }
 
     fn flush() {
@@ -81,13 +90,23 @@ impl Renderer {
         }
     }
 
+    /// 输出 Markdown 残留行(工具行/尾注前调用,保持输出顺序)
+    fn flush_markdown(&mut self) {
+        self.md.flush(&mut |s| {
+            anstream::print!("{s}");
+            Self::flush();
+        });
+    }
+
     pub fn render(&mut self, event: &ProviderEvent) {
         match event {
             ProviderEvent::TextDelta(t) => {
                 self.erase_hint();
                 self.break_thinking();
-                anstream::print!("{t}");
-                Self::flush();
+                self.md.feed(t, &mut |s| {
+                    anstream::print!("{s}");
+                    Self::flush();
+                });
             }
             ProviderEvent::ThinkingDelta(t) => {
                 self.erase_hint();
@@ -97,7 +116,8 @@ impl Renderer {
             }
             ProviderEvent::ToolUseStart { .. } => {
                 self.erase_hint();
-                self.break_thinking(); // 参数未齐,不在 Start 打印
+                self.break_thinking();
+                self.flush_markdown(); // 残留半行先落盘,再打工具行
             }
             ProviderEvent::ToolUseDelta { .. } => {}
             ProviderEvent::ToolUseComplete { name, input, .. } => {
@@ -115,6 +135,7 @@ impl Renderer {
             ProviderEvent::Completed { usage } => {
                 self.erase_hint();
                 self.break_thinking();
+                self.flush_markdown();
                 if self.pending_tools > 0 {
                     // 轮次带工具调用:尾注等 ⎿ 结果行打完再出,保持阅读时序
                     self.pending_usage = Some(usage.clone());
