@@ -67,6 +67,10 @@ async fn two_turn_loop_reads_then_answers() {
         system: "sys".into(),
         history: vec![],
         max_turns: 5,
+        cache_strategy: None,
+        context_limit: None,
+        pending_summary: None,
+        compress_attempted: false,
     };
     loop_.registry.register(Box::new(FakeRead));
 
@@ -123,6 +127,10 @@ async fn denied_tool_result_feeds_back_and_model_can_finish() {
         system: String::new(),
         history: vec![],
         max_turns: 5,
+        cache_strategy: None,
+        context_limit: None,
+        pending_summary: None,
+        compress_attempted: false,
     };
     loop_.registry.register(Box::new(FakeWrite));
     let text = loop_.run_turn("改 a.txt", &mut |_| {}).await.unwrap();
@@ -150,6 +158,10 @@ async fn max_turns_exceeded_is_error() {
         system: String::new(),
         history: vec![],
         max_turns: 3,
+        cache_strategy: None,
+        context_limit: None,
+        pending_summary: None,
+        compress_attempted: false,
     };
     loop_.registry.register(Box::new(FakeRead));
     let err = loop_.run_turn("x", &mut |_| {}).await.unwrap_err();
@@ -186,6 +198,10 @@ fn slow_loop(scripts: Vec<Vec<ProviderEvent>>) -> AgentLoop {
         system: String::new(),
         history: vec![],
         max_turns: 5,
+        cache_strategy: None,
+        context_limit: None,
+        pending_summary: None,
+        compress_attempted: false,
     }
 }
 

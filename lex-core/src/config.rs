@@ -11,6 +11,7 @@ pub struct Config {
     pub openai: OpenAiConfig,
     pub shell: ShellConfig,
     pub security: SecurityConfig,
+    pub context: ContextConfig,
     pub max_turns: u32,
 }
 
@@ -55,6 +56,22 @@ pub struct ShellConfig {
     pub args: Option<Vec<String>>,
 }
 
+/// `[context]` 上下文管理(Phase 4):本地 token 估算(字符÷4)超过
+/// `limit × 0.8` 触发一次历史压缩;`enabled = false` 关闭压缩。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ContextConfig {
+    /// 上下文 token 上限(默认 64K,覆盖主流端点的保守值;按所用模型调整)
+    pub limit: u32,
+    pub enabled: bool,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        ContextConfig { limit: 64_000, enabled: true }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -64,6 +81,7 @@ impl Default for Config {
             openai: OpenAiConfig::default(),
             shell: ShellConfig::default(),
             security: SecurityConfig::default(),
+            context: ContextConfig::default(),
             max_turns: 50,
         }
     }
@@ -208,6 +226,21 @@ mod tests {
         assert_eq!(cfg.anthropic.model, "claude-test");
         assert_eq!(cfg.anthropic.max_tokens, 8192); // 默认采样上限
         assert_eq!(cfg.max_turns, 50);
+        assert_eq!(cfg.context.limit, 64_000);
+        assert!(cfg.context.enabled);
+    }
+
+    #[test]
+    fn context_section_is_parsed() {
+        let d = temp_dir("context-section");
+        fs::write(
+            d.join("lex-code.toml"),
+            "[anthropic]\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"m\"\n[context]\nlimit = 128000\nenabled = false\n",
+        )
+        .unwrap();
+        let cfg = Config::load(&d).unwrap();
+        assert_eq!(cfg.context.limit, 128_000);
+        assert!(!cfg.context.enabled);
     }
 
     #[test]

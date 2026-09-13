@@ -72,7 +72,7 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,

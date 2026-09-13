@@ -138,3 +138,29 @@ set LEX_OPENAI_API_KEY=<你的 DeepSeek Key>         (CMD)
 - [x] Forbidden 命令被拦截并说明原因(集成测试)
 - [x] 只读工具同轮并发、副作用串行(时序测试)
 - [x] [security] 规则表可追加,Forbidden 默认项不可移除
+
+## 9. Phase 4 冒烟:AGENTS.md 注入 + 上下文压缩 + 前缀缓存遥测
+
+新增:`context` 模块(AGENTS.md 一次性注入 system prompt、token 估算 字符÷4、历史压缩)、`provider/cache.rs`(`ImplicitPrefixCacheStrategy`:system/tools 逐字节一致 + messages 逐条消息列表级前缀校验、命中率遥测、`invalidate()`)、`[context]` 配置段(limit 默认 64000 / enabled)。
+
+### 步骤
+
+1. 冒烟目录放一个 `AGENTS.md`(内含"回复必须以 `[AGENTS-OK]` 开头"的标记指令);`lex-code.toml` 用 `provider = "openai"` + DeepSeek 端点。
+2. 观察轮:`RUST_LOG=lex_core=info` 交互模式连续两个只读任务(file_read 免确认,管道喂入)。
+3. 压缩轮:toml 追加 `[context] limit = 200`(阈值 160 token),三个任务;task 2 起历史超阈值。
+
+### 真实联调记录(2026-09-13,DeepSeek OpenAI 兼容端点)
+
+- **AGENTS.md 注入**:启动行打印"已加载项目指引 AGENTS.md",模型回复带 `[AGENTS-OK]` 标记且能复述文件内容——注入进入缓存前缀后未破坏缓存(task 2 起命中 92%+)。
+- **命中率遥测**:`前缀缓存命中率 hit=... miss=... hit_rate="92.1%"` 逐轮输出,命中 token 0 → 1920 → 2176 → 2304 → 2560 随轮次上升;全程**零前缀违例**(append-only 历史校验通过)。
+- **压缩触发**:task 2 开始时历史 298 token > 160,但仅一段完整轮次、切点为 0 → "本轮跳过压缩"**且不消耗**会话内唯一机会;task 3 开始时 `历史压缩完成 summarized=4 kept=4`,随后 `缓存链断开 invalidations=1`。
+- **压缩后行为**:摘要并入下一条 user 消息(角色交替保持,请求未被 400 拒绝);命中数按预期回落(2560 → 2048,重建前缀);模型仍准确记得 task 1/2 的结论(`add` 用了减法、AGENTS.md 共 2 条规则)——关键决策与文件路径在摘要中保留;输入 token 从 2696 回落至 2650,验证上下文不再无限增长。
+- **已知行为**:摘要转述可能弱化逐字指令(本次模型把标记指令转述为 `[以 AGENTS-OK 开头]` 而非原样输出标记)——属摘要保真度边界,非缺陷;压缩后依赖逐字指令的场景建议把关键约定留在 AGENTS.md(每次请求都随 system 注入)。
+
+### 验收清单
+
+- [x] 长会话日志可见 `prompt_cache_hit_tokens` 随轮次上升(命中率 >90%)
+- [x] 上下文不无限增长(压缩触发、输入 token 回落)
+- [x] AGENTS.md 存在即注入、缺失/空文件跳过(单测覆盖)
+- [x] `ImplicitPrefixCacheStrategy`:system/tools 变化、历史改写、缩短均计违例;纯追加通过;invalidate 后基线重置(单测覆盖)
+- [x] 压缩一次触发语义:跳过/失败不消耗机会,成功后不再触发(集成测试 + 真实联调双重确认)

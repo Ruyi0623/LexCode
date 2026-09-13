@@ -6,6 +6,8 @@ use clap::Parser;
 use lex_core::agent::AgentLoop;
 use lex_core::config::{resolve_api_key, Config};
 use lex_core::prompt::{load_system_prompt, render_template, resolve_system_prompt_path};
+use lex_core::context::agents_md::{assemble_system_prompt, load_agents_md};
+use lex_core::provider::cache::{CacheStrategy, ImplicitPrefixCacheStrategy};
 use lex_core::provider::anthropic::AnthropicProvider;
 use lex_core::provider::openai_compat::OpenAiCompatProvider;
 use lex_core::provider::openai_types::OpenAiParams;
@@ -101,7 +103,16 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
         args: cfg.shell.args.clone().unwrap_or_default(),
     });
 
-    let system = build_system_prompt(cfg, &cwd)?;
+    let base_system = build_system_prompt(cfg, &cwd)?;
+    // AGENTS.md 一次性注入到系统提示词之后,进入缓存前缀(此后逐字节不变)
+    let agents_md = load_agents_md(&cwd);
+    let system = assemble_system_prompt(&base_system, agents_md.as_deref());
+    if agents_md.is_some() {
+        anstream::println!("\x1b[2m已加载项目指引 AGENTS.md\x1b[0m");
+    }
+    // 隐式前缀缓存策略:两个 provider 通用(前缀一致性校验 + 命中率遥测)
+    let cache_strategy: std::sync::Arc<dyn CacheStrategy> =
+        std::sync::Arc::new(ImplicitPrefixCacheStrategy::new());
     Ok(AgentLoop {
         provider,
         registry,
@@ -111,6 +122,10 @@ fn build_loop(cfg: &Config, cwd: PathBuf, input: std::sync::Arc<confirm::CliInpu
         system,
         history: vec![],
         max_turns: cfg.max_turns,
+        cache_strategy: Some(cache_strategy),
+        context_limit: cfg.context.enabled.then_some(cfg.context.limit),
+        pending_summary: None,
+        compress_attempted: false,
     })
 }
 
