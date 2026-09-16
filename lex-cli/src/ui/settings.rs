@@ -263,14 +263,23 @@ pub enum SlashCommand {
     Unknown,
 }
 
-/// 交互输入的斜杠命令识别;None = 普通文本(不进分发)
+/// 已知斜杠命令表(新增命令在此登记;前缀唯一命中即执行)
+const KNOWN_COMMANDS: &[&str] = &["/settings"];
+
+/// 交互输入的斜杠命令识别;None = 普通文本(不进分发)。
+/// 精确匹配或唯一前缀命中(如 /setting)均执行;歧义/未知前缀返回 Unknown。
 pub fn parse_command(line: &str) -> Option<SlashCommand> {
     let t = line.trim();
     if !t.starts_with('/') {
         return None;
     }
-    match t {
-        "/settings" => Some(SlashCommand::Settings),
+    if t == "/" {
+        // 空前缀匹配所有命令,视为歧义
+        return Some(SlashCommand::Unknown);
+    }
+    let candidates: Vec<&str> = KNOWN_COMMANDS.iter().copied().filter(|c| c.starts_with(t)).collect();
+    match candidates.as_slice() {
+        ["/settings"] => Some(SlashCommand::Settings),
         _ => Some(SlashCommand::Unknown),
     }
 }
@@ -447,6 +456,18 @@ mod tests {
         assert_eq!(parse_command("你好"), None, "普通文本不误判");
         assert_eq!(parse_command(""), None);
         assert_eq!(parse_command("settings"), None, "缺斜杠不算命令");
+    }
+
+    #[test]
+    fn parse_command_accepts_unique_prefix() {
+        use super::{parse_command, SlashCommand};
+        // 唯一前缀命中:少打几个字母也能进(如 /setting)
+        assert!(matches!(parse_command("/setting"), Some(SlashCommand::Settings)));
+        assert!(matches!(parse_command("/set"), Some(SlashCommand::Settings)));
+        assert!(matches!(parse_command("/s"), Some(SlashCommand::Settings)));
+        // 歧义/无效前缀不算命中
+        assert!(matches!(parse_command("/"), Some(SlashCommand::Unknown)), "空前缀视为歧义");
+        assert!(matches!(parse_command("/settingsx"), Some(SlashCommand::Unknown)), "比已知命令更长且不相等不是前缀");
     }
 
     mod page {
