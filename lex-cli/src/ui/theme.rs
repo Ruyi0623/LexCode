@@ -14,6 +14,8 @@ pub const CODE: &str = "\x1b[96m";
 pub const RESET: &str = "\x1b[0m";
 /// 回到行首并清除整行(重绘内容行用)
 pub const CLEAR_LINE: &str = "\r\x1b[2K";
+/// 整屏清除 + 光标归位(设置页等全屏界面进出用;3J 连同回滚缓冲一起清)
+pub const CLEAR_SCREEN: &str = "\x1b[2J\x1b[3J\x1b[H";
 
 pub fn accent(s: &str) -> String {
     format!("{ACCENT}{s}{RESET}")

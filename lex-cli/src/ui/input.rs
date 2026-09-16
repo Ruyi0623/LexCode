@@ -150,9 +150,9 @@ pub enum InputOutcome {
 }
 
 /// raw mode 守卫:Drop 恢复,panic/错误路径也不残留
-struct RawGuard;
+pub(crate) struct RawGuard;
 impl RawGuard {
-    fn new() -> std::io::Result<Self> {
+    pub(crate) fn new() -> std::io::Result<Self> {
         terminal::enable_raw_mode()?;
         Ok(RawGuard)
     }
@@ -165,7 +165,7 @@ impl Drop for RawGuard {
 
 /// 单例事件读取线程:阻塞 read() 经无界 channel 供给异步侧;
 /// 任务执行期间产生的按键会在下次输入会话开始时被清空。
-fn event_bus() -> &'static (
+pub(crate) fn event_bus() -> &'static (
     tokio::sync::mpsc::UnboundedSender<Event>,
     tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Event>>,
 ) {
