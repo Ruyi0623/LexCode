@@ -192,6 +192,69 @@ pub fn render_detail(v: &SettingsView, module: usize) -> Vec<String> {
     lines
 }
 
+// ---------- 页面状态机(纯函数,单测覆盖) ----------
+
+use crossterm::event::KeyCode;
+
+#[derive(Debug, PartialEq)]
+pub enum PageAction {
+    None,
+    EnterDetail(usize),
+    ToList,
+    Quit,
+}
+
+pub struct PageState {
+    pub selected: usize,
+    pub in_detail: bool,
+}
+
+impl PageState {
+    pub fn new() -> Self {
+        PageState { selected: 0, in_detail: false }
+    }
+
+    pub fn handle_key(&mut self, code: KeyCode) -> PageAction {
+        if self.in_detail {
+            return match code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    self.in_detail = false;
+                    PageAction::ToList
+                }
+                _ => PageAction::None,
+            };
+        }
+        match code {
+            KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                PageAction::None
+            }
+            KeyCode::Down => {
+                self.selected = (self.selected + 1).min(MODULE_TITLES.len() - 1);
+                PageAction::None
+            }
+            KeyCode::Enter => {
+                self.in_detail = true;
+                PageAction::EnterDetail(self.selected)
+            }
+            KeyCode::Char(c @ '1'..='4') => {
+                let idx = c as usize - '1' as usize;
+                self.selected = idx;
+                self.in_detail = true;
+                PageAction::EnterDetail(idx)
+            }
+            KeyCode::Char('q') | KeyCode::Esc => PageAction::Quit,
+            _ => PageAction::None,
+        }
+    }
+}
+
+impl Default for PageState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +360,42 @@ mod tests {
         let ctx = render_detail(&v, 2).join("\n");
         assert!(ctx.contains("64000") || ctx.contains("64,000"), "详情应含上下文 limit");
         assert!(ctx.contains("已触发"), "compress_attempted=true 应展示");
+    }
+
+    mod page {
+        use super::super::{PageAction, PageState};
+        use crossterm::event::KeyCode;
+
+        #[test]
+        fn selection_moves_within_bounds() {
+            let mut s = PageState::new();
+            assert_eq!(s.handle_key(KeyCode::Up), PageAction::None);
+            assert_eq!(s.selected, 0, "上移不能越过 0");
+            s.handle_key(KeyCode::Down);
+            s.handle_key(KeyCode::Down);
+            s.handle_key(KeyCode::Down);
+            s.handle_key(KeyCode::Down); // 已在 3
+            assert_eq!(s.selected, 3, "下移不能越过最后模块");
+        }
+
+        #[test]
+        fn number_keys_jump_to_module() {
+            let mut s = PageState::new();
+            assert_eq!(s.handle_key(KeyCode::Char('3')), PageAction::EnterDetail(2));
+            assert_eq!(s.selected, 2);
+            assert_eq!(s.handle_key(KeyCode::Char('9')), PageAction::None, "越界数字忽略");
+        }
+
+        #[test]
+        fn enter_and_escape_navigate() {
+            let mut s = PageState::new();
+            assert_eq!(s.handle_key(KeyCode::Enter), PageAction::EnterDetail(0));
+            s.in_detail = true;
+            assert_eq!(s.handle_key(KeyCode::Esc), PageAction::ToList);
+            assert!(!s.in_detail);
+            assert_eq!(s.handle_key(KeyCode::Esc), PageAction::Quit);
+            let mut s2 = PageState::new();
+            assert_eq!(s2.handle_key(KeyCode::Char('q')), PageAction::Quit);
+        }
     }
 }
