@@ -43,8 +43,8 @@ lex-code 目前所有配置(`lex-code.toml` + 环境变量)只能靠读文档和
                版本(env!("CARGO_PKG_VERSION"))、项目类型、工作目录
 ```
 
-- 构造:`SettingsView::from(config: &Config, runtime: SettingsRuntime)`;`SettingsRuntime { compress_attempted: bool, token_estimate: u64 }` 由 `interactive_session` 从 `AgentLoop` 两个 pub 字段(`compress_attempted`、`context::compress::estimate_tokens(&history)`)读取。
-- 纯数据 + 纯渲染,lex-core 零改动(`estimate_tokens` 已是 pub)。
+- 构造:`SettingsView::from(config: &Config, runtime: SettingsRuntime)`;`SettingsRuntime { compress_attempted: bool, token_estimate: u64, forbidden_count: u64, confirm_count: u64, auto_count: u64, log_level: String, project_type: String, cwd: String }` 由 `interactive_session` 从 `AgentLoop` 读取(`compress_attempted`、`context::compress::estimate_tokens(&history)`、`security` 的新只读访问器)。
+- lex-core 唯一改动:为 `SecurityRules`/`SecurityGuard` 新增只读访问器 `rule_counts() -> (usize, usize, usize)`(forbidden/confirm/auto 条数),无任何行为改动;其余为零改动(`estimate_tokens` 已是 pub)。
 
 ## 渲染约束(硬约束延续)
 
