@@ -3,4 +3,5 @@ pub mod banner;
 pub mod events;
 pub mod input;
 pub mod markdown;
+pub mod settings;
 pub mod theme;
