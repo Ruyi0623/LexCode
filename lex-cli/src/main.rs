@@ -225,6 +225,39 @@ async fn interactive_session(
         }
         history.push(line.clone());
 
+        // 斜杠命令分发:/settings 进设置页;其他 / 前缀给友好提示;普通文本照常进模型
+        match ui::settings::parse_command(&line) {
+            Some(ui::settings::SlashCommand::Settings) => {
+                let log_level = ui::settings::resolve_log_level(
+                    std::env::var("LEX_LOG").ok().as_deref(),
+                    std::env::var("RUST_LOG").ok().as_deref(),
+                );
+                let view = ui::settings::SettingsView::from(
+                    cfg,
+                    ui::settings::make_runtime(
+                        agent,
+                        &detect_project_type(cwd),
+                        &display_path(cwd),
+                        &log_level,
+                    ),
+                );
+                let open = ui::settings::open_page(&view).await;
+                if let Err(e) = open {
+                    // raw mode 启用失败等错误打印一行后返回 REPL,不中断会话
+                    anstream::println!("{}", ui::theme::error(&format!("设置页打开失败: {e}")));
+                }
+                // 返回 REPL:清屏并重绘横幅,恢复上下文
+                anstream::print!("{}", ui::theme::CLEAR_SCREEN);
+                ui::banner::print(&cfg.provider, &current_model(cfg), &display_path(cwd), &detect_project_type(cwd));
+                continue;
+            }
+            Some(ui::settings::SlashCommand::Unknown) => {
+                anstream::println!("{}", ui::theme::warn("未知命令,可用:/settings"));
+                continue;
+            }
+            None => {}
+        }
+
         let r = Arc::clone(&renderer);
         r.lock().unwrap_or_else(|p| p.into_inner()).thinking_hint();
         let r2 = Arc::clone(&renderer);

@@ -255,6 +255,81 @@ impl Default for PageState {
     }
 }
 
+// ---------- 命令分发 ----------
+
+#[derive(Debug, PartialEq)]
+pub enum SlashCommand {
+    Settings,
+    Unknown,
+}
+
+/// 交互输入的斜杠命令识别;None = 普通文本(不进分发)
+pub fn parse_command(line: &str) -> Option<SlashCommand> {
+    let t = line.trim();
+    if !t.starts_with('/') {
+        return None;
+    }
+    match t {
+        "/settings" => Some(SlashCommand::Settings),
+        _ => Some(SlashCommand::Unknown),
+    }
+}
+
+// ---------- 终端集成 ----------
+
+use crossterm::tty::IsTty;
+use lex_core::error::{LexError, Result};
+
+use crate::ui::input::{event_bus, RawGuard};
+
+fn emit(lines: &[String]) {
+    for l in lines {
+        anstream::print!("{l}\r\n"); // raw mode 期间显式 \r\n
+    }
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+}
+
+fn repaint_list(v: &SettingsView, page: &PageState) {
+    anstream::print!("{}", theme::CLEAR_SCREEN);
+    emit(&render_list(v, page.selected));
+}
+
+/// 设置页主入口:TTY 全屏交互;非 TTY 降级为一次性线性摘要。
+/// 返回后调用方负责清屏/重绘横幅。
+pub async fn open_page(v: &SettingsView) -> Result<()> {
+    let is_tty = std::io::stdin().is_tty() && std::io::stdout().is_tty();
+    if !is_tty {
+        // 非交互环境(管道/重定向):无需交互,线性打印即可;anstream 在非 TTY 自动剥离 ANSI
+        for m in 0..MODULE_TITLES.len() {
+            emit(&render_detail(v, m));
+        }
+        return Ok(());
+    }
+    let _raw = RawGuard::new().map_err(LexError::Io)?;
+    let (_, rx) = event_bus();
+    let mut page = PageState::new();
+    repaint_list(v, &page);
+    let mut rx = rx.lock().await;
+    loop {
+        let ev = rx.recv().await;
+        let Some(ev) = ev else { return Ok(()) }; // 按键读线程终止:直接回 REPL
+        let crossterm::event::Event::Key(key) = ev else { continue };
+        if key.kind != crossterm::event::KeyEventKind::Press {
+            continue; // Windows 会发 Release 事件
+        }
+        match page.handle_key(key.code) {
+            PageAction::None => {}
+            PageAction::EnterDetail(_) => {
+                anstream::print!("{}", theme::CLEAR_SCREEN);
+                emit(&render_detail(v, page.selected));
+            }
+            PageAction::ToList => repaint_list(v, &page),
+            PageAction::Quit => return Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +435,18 @@ mod tests {
         let ctx = render_detail(&v, 2).join("\n");
         assert!(ctx.contains("64000") || ctx.contains("64,000"), "详情应含上下文 limit");
         assert!(ctx.contains("已触发"), "compress_attempted=true 应展示");
+    }
+
+    #[test]
+    fn parse_command_matches_settings_only() {
+        use super::{parse_command, SlashCommand};
+        assert!(matches!(parse_command("/settings"), Some(SlashCommand::Settings)));
+        assert!(matches!(parse_command("/Settings"), Some(SlashCommand::Unknown)));
+        assert!(matches!(parse_command("/foo"), Some(SlashCommand::Unknown)));
+        assert!(matches!(parse_command(" /settings  "), Some(SlashCommand::Settings)), "首尾空白容忍");
+        assert_eq!(parse_command("你好"), None, "普通文本不误判");
+        assert_eq!(parse_command(""), None);
+        assert_eq!(parse_command("settings"), None, "缺斜杠不算命令");
     }
 
     mod page {
