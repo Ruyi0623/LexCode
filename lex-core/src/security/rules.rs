@@ -135,6 +135,11 @@ impl SecurityRules {
     pub fn is_sensitive_path(&self, path: &str) -> bool {
         self.sensitive.iter().any(|re| re.is_match(path))
     }
+
+    /// 只读统计:(forbidden, confirm, auto) 条数(设置页展示用,无行为影响)
+    pub fn rule_counts(&self) -> (usize, usize, usize) {
+        (self.forbidden.len(), self.confirm.len(), self.auto.len())
+    }
 }
 
 /// 单轮(一次 run_turn)安全状态:记录敏感文件读取,支撑外发启发式。
@@ -174,6 +179,11 @@ impl SecurityGuard {
     pub fn decide(&self, subject: &str, read_only: bool) -> Decision {
         let sensitive_read = self.turn.lock().map(|t| t.sensitive_read).unwrap_or(false);
         self.rules.decide(subject, read_only, sensitive_read)
+    }
+
+    /// 只读统计(转发规则表;设置页展示用)
+    pub fn rule_counts(&self) -> (usize, usize, usize) {
+        self.rules.rule_counts()
     }
 }
 
@@ -290,5 +300,19 @@ mod tests {
         let cfg = SecurityConfig { forbidden: vec![], confirm: vec![], auto: vec![] };
         let rules = SecurityRules::build(&cfg).unwrap();
         assert!(matches!(rules.decide("git push --force", false, false), Decision::Forbidden { .. }));
+    }
+
+    #[test]
+    fn rule_counts_reflect_builtins_and_user_config() {
+        let defaults = SecurityRules::defaults();
+        assert_eq!(defaults.rule_counts(), (3, 0, 0)); // 内置 Forbidden 三条,无用户规则
+
+        let cfg = SecurityConfig {
+            forbidden: vec![r"dangerous".into()],
+            confirm: vec![r"^cargo test".into()],
+            auto: vec![r"^cargo check".into()],
+        };
+        let custom = SecurityRules::build(&cfg).unwrap();
+        assert_eq!(custom.rule_counts(), (4, 1, 1)); // 内置 3 + 用户 1
     }
 }
