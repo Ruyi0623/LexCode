@@ -1,6 +1,6 @@
 # Lex Code — Agent 指引
 
-类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)、Phase 4(AGENTS.md 注入 + 上下文压缩 + 前缀缓存校验/遥测)均已完成并真实联调;Phase 5(错误边界、可观测性、配置文档)已完成,全部阶段收尾,见下方路线图。
+类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)、Phase 4(AGENTS.md 注入 + 上下文压缩 + 前缀缓存校验/遥测)均已完成并真实联调;Phase 5(错误边界、可观测性、配置文档)已完成;Phase 6(sub-agent / TUI)计划已写待实施,见路线图。此外 `/settings` 设置页已落地(REPL 内斜杠命令,只读配置快照,四模块,非 TTY 降级)。
 
 目录:`lex-core/src/` 核心库(message / provider / agent / tools / security / context / config / prompt)、`lex-cli/src/` 终端 UI(main / confirm / ui:theme / banner / input / markdown / events / settings)、`docs/` 设计文档与需求任务书、`examples/smoke/` 真实联调步骤、`assets/` 运行时系统提示词、`tests/`(位于各 crate)按真实抓包/mock 固化回归。
 
@@ -16,7 +16,7 @@
 
 ```bash
 export PATH="$HOME/.cargo/bin:/d/mingw64/bin:$PATH"   # Git Bash 下通常需要
-cargo test --workspace        # 全部测试(当前 111 个)
+cargo test --workspace        # 全部测试(当前 140 个)
 cargo test -p lex-core        # 仅核心库
 cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-code.exe
 ```
@@ -41,7 +41,7 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 - `lex-core/src/agent/mod.rs` — AgentLoop 状态机;`on_tool_result: Option<ToolResultHook>` 工具结果回调(CLI 渲染 `⎿` 结果行用,无订阅者零开销);`recover_interrupt()` 供 Ctrl+C 打断后调用——清除历史尾部悬空 tool_use(无对应 tool_result),否则下轮请求被两端点 400 拒绝。
 - `lex-core/src/tools/` — `Tool` trait + 注册表;5 个内置工具 file_read/file_edit/bash_exec/grep_search/todo_write;`file_read.rs` 的 `require_str`/`resolve_path` 被其他工具复用;`grep_search` 是内置 ignore+regex 实现(不调外部 grep);只读工具同轮 join_all 并发,混入副作用严格串行(`agent/mod.rs`)。
 - `lex-core/src/security/` — 三级权限(Auto/Confirm/Forbidden)。检查器内置于 `execute_tool_call` 执行路径,上层不可绕过;内置 Forbidden 默认规则(删 .git / force push / rm -rf 高危目标)用户配置**不可静默移除**;敏感文件读取后同轮网络外发命令启发式硬拦截(状态每轮 `reset_turn`)。`[security]` 段三级正则数组只能追加。有副作用的工具执行**必须**经过 `execute_tool_call` 内部的权限检查,该路径不可被上层绕过;拒绝/失败降级为 `ToolResult{is_error}` 回填模型,不上抛。
-- `lex-cli/src/` — 渲染与 UI;错误用 anyhow,提示词/交互输出用中文,anstream 输出 ANSI。确认与 REPL **共享同一个** `CliInput`(stdin BufReader 分开会丢预读输入)。UI 硬约束:所有颜色/ANSI 序列只从 `ui/theme.rs` 取,其他文件禁止裸 `\x1b[`;raw mode 期间换行必须显式 `\r\n`(`\n` 不回车,输入盒边框会错位);流式正文经 `ui/markdown.rs` 行缓冲渲染(粗体/斜体/行内代码/标题/列表/围栏,纯函数有单测,改渲染先跑 `editor_tests`/markdown 测试);提交输入盒 = 折叠(留 `› 回执`),退出 = 整盒清除。
+- `lex-cli/src/` — 渲染与 UI;错误用 anyhow,提示词/交互输出用中文,anstream 输出 ANSI。确认与 REPL **共享同一个** `CliInput`(stdin BufReader 分开会丢预读输入)。UI 硬约束:所有颜色/ANSI 序列只从 `ui/theme.rs` 取,其他文件禁止裸 `\x1b[`;raw mode 期间换行必须显式 `\r\n`(`\n` 不回车,输入盒边框会错位);流式正文经 `ui/markdown.rs` 行缓冲渲染(粗体/斜体/行内代码/标题/列表/围栏,纯函数有单测,改渲染先跑 `editor_tests`/markdown 测试);提交输入盒 = 折叠(留 `› 回执`),退出 = 整盒清除。`ui/settings.rs` 是 `/settings` 设置页:`parse_command` 斜杠分发(唯一前缀命中,如 `/setting`)→ `SettingsView` 只读快照 → 渲染/状态机纯函数可单测;非 TTY 自动降级线性摘要;Key 只显示"环境变量 LEX_*",绝不回显;按键复用 `input.rs` 的 `event_bus()`/`RawGuard`。
 
 ## 硬性约束(任务书规定,违反即返工)
 
@@ -58,5 +58,7 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 - ~~Phase 3:grep_search / todo_write、三级权限、只读并发~~(已完成,见 `examples/smoke/README.md` 第 8 节)。
 - ~~Phase 4:AGENTS.md、压缩触发、`ImplicitPrefixCacheStrategy`~~(已完成并通过 DeepSeek 端点真实冒烟,见 `examples/smoke/README.md` 第 9 节)。压缩要点:阈值 `context.limit × 0.8`、**会话内只成功触发一次**(无可切分历史/摘要失败不消耗机会)、摘要并入下一条 user 消息(保持角色交替,Anthropic 端点要求)、`[context]` 段 limit(默认 64000)/enabled 可配。
 - ~~Phase 5:错误边界打磨、可观测性、配置文档~~(已完成:provider 客户端 connect_timeout 防无界阻塞;`execute_tool_call` 记录工具耗时/结果日志;日志级别 `LEX_LOG` > `RUST_LOG` > warn(仅 stderr,不污染渲染);根目录 `README.md` 覆盖配置全字段、环境变量、安全模型、日志事件表)。
+- **Phase 6(计划就绪,未开工)**:sub-agent 派生机制与 ratatui TUI,实施计划见 `docs/superpowers/plans/2026-09-13-phase6-subagent.md` 与 `2026-09-13-phase6-tui.md`(逐任务 TDD,含完整测试代码;执行前先读)。关键前置:`ToolRegistry` 需改 Arc 存储 + `subset()`;`Tool` trait 加 `parallel_safe()`;`build_loop` 改为注入 handler/todos(TUI 计划依赖此项已合入)。
+- `/settings` 设置页(已完成):规格 `docs/superpowers/specs/2026-09-16-settings-page-design.md`,计划 `docs/superpowers/plans/2026-09-16-settings-page.md`;后续按模块填充编辑能力(写回 lex-code.toml + 热生效)。
 
-不做:GUI/IDE 插件、服务化、CI/CD、sub-agent 实现(仅预留 `ToolRegistry` 扩展点)。
+不做:GUI/IDE 插件、服务化、CI/CD(任务书明确:若启动需独立任务书,不与 sub-agent/TUI 混批)。
