@@ -25,6 +25,10 @@
 ## 开工前已知偏差(2026-09-17 核对,先读本节再动手)
 
 > 对全文约 75 处「关于现存代码」的断言逐条比对真实仓库:约 57 处一致,**20 处不符,其中 7 处阻塞**。以下按「不修就做不下去」排序。本节优先于下文正文。
+>
+> **行号约定**:本节内引用的行号以**插入本节之前的原文**为准(本节插入使其后正文行号整体 **+31**)。每条均附原文摘录,行号对不上时按摘录检索。
+>
+> 已知就地修正:Task 2 Interfaces 里把 `SpawnSubagent` 的归属写作 "Task 6",已改为 **Task 4**(见下方「任务编号错位」)。
 
 ### 阻塞项
 
@@ -44,7 +48,7 @@
 - **Task 2 与运行时提示词冲突**:`parallel_safe()` 意在让非只读工具并发,但 `assets/coding-agent-system-prompt.md:30` 明确对模型说「有副作用的操作(写文件、执行命令)必须串行执行」。Task 8 的文档清单未列这条同步,不改则模型仍按旧规则自我约束。
 - **「保住隐式前缀缓存」无代码路径支撑**:子 agent 用 `subset()` 注册表,tools 段必然与父级不同(`provider/cache.rs:88-90` 逐字节比对即判「tools 段变化」);且子 AgentLoop 设了 `cache_strategy: None`,连 `prepare` 都不调用。故 L1266 要求的「子 agent 缓存遥测」与 L971 的 `None` 不可兼得;验收表(L1292)相关表述应删除或改为「不适用」。
 - **todos 复用自相矛盾**:Task 7 称把 todos 提升到 `run()` 层注入 runtime,Task 6 实现却给子 loop 新建 `Arc::new(Mutex::new(Vec::new()))`,结构体 `todos` 字段全程不被读取。
-- **任务编号错位 4 处**:L139 把 Task 4 的产出记作 Task 6;L33 把 Task 6 记作 Task 7;L305、L478 把 Task 7 的 main.rs 装配记作 Task 8。
+- **任务编号错位 4 处**:L139 把 Task 4 的产出记作 Task 6(**已就地修正**——该处会在派发 Task 4 时被直接引用,属活雷,故改在正文);L33 把 Task 6 记作 Task 7;L305、L478 把 Task 7 的 main.rs 装配记作 Task 8(**后 3 处未改,按本节的正确编号理解即可**)。
 - **反向依赖未标注**:Task 4 的 `tool_metadata` 测试消费 Task 2 的 `parallel_safe`,Interfaces 未标出。
 
 ### 基线
@@ -167,7 +171,7 @@ git commit -m "refactor(tools): ToolRegistry 改 Arc 存储并新增 names/subse
 - Test: `lex-core/src/tools/mod.rs`(`mod tests`)
 
 **Interfaces:**
-- Produces: `trait Tool { ... fn parallel_safe(&self) -> bool { self.read_only() } }`。Task 6 的 `SpawnSubagent` 覆写为 `true`。
+- Produces: `trait Tool { ... fn parallel_safe(&self) -> bool { self.read_only() } }`。Task 4 的 `SpawnSubagent` 覆写为 `true`。
 - 语义:默认与 `read_only()` 一致,现有 5 个工具行为零变化。
 
 - [ ] **Step 1: 写失败测试**
