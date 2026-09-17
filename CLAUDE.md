@@ -1,6 +1,6 @@
 # Lex Code — Agent 指引
 
-类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)、Phase 4(AGENTS.md 注入 + 上下文压缩 + 前缀缓存校验/遥测)均已完成并真实联调;Phase 5(错误边界、可观测性、配置文档)已完成;Phase 6(sub-agent / TUI)计划已写待实施,见路线图。此外 `/settings` 设置页已落地(REPL 内斜杠命令,只读配置快照,四模块,非 TTY 降级)。
+类 Claude Code 的 CLI 编程 agent(Rust)。两大差异化:可插拔多 provider(Anthropic 格式 + OpenAI 兼容格式)、DeepSeek 前缀缓存优化。Phase 1(Anthropic 闭环)、Phase 2(OpenAI 兼容 adapter)、Phase 3(三级权限 + grep_search/todo_write + 只读并发)、Phase 4(AGENTS.md 注入 + 上下文压缩 + 前缀缓存校验/遥测)均已完成并真实联调;Phase 5(错误边界、可观测性、配置文档)已完成;Phase 6 模块一(sub-agent 派生机制)已完成,模块二(ratatui TUI)计划已写待实施,见路线图。此外 `/settings` 设置页已落地(REPL 内斜杠命令,只读配置快照,四模块,非 TTY 降级)。
 
 目录:`lex-core/src/` 核心库(message / provider / agent / tools / security / context / config / prompt)、`lex-cli/src/` 终端 UI(main / confirm / ui:theme / banner / input / markdown / events / settings)、`docs/` 设计文档与需求任务书、`examples/smoke/` 真实联调步骤、`assets/` 运行时系统提示词、`tests/`(位于各 crate)按真实抓包/mock 固化回归。
 
@@ -16,7 +16,7 @@
 
 ```bash
 export PATH="$HOME/.cargo/bin:/d/mingw64/bin:$PATH"   # Git Bash 下通常需要
-cargo test --workspace        # 全部测试(当前 140 个)
+cargo test --workspace        # 全部测试(当前 158 个)
 cargo test -p lex-core        # 仅核心库
 cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-code.exe
 ```
@@ -39,7 +39,8 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 - `lex-core/src/message.rs` — 中立消息模型(`Block::Thinking/ToolUse/ToolResult`),全项目唯一消息表示;adapter 不得丢弃或重排 Thinking 块。
 - `lex-core/src/provider/` — `Provider` trait + `AnthropicProvider` / `OpenAiCompatProvider`(均 SSE 流式;切换只改配置 `provider = "anthropic"|"openai"`)。HTTP 客户端只设 connect_timeout(30s)防连接无界阻塞,**不设读取超时**(SSE 长流不能被总超时截断)。OpenAI 路径按 DeepSeek 官方文档完整适配:`max_tokens`/`thinking`/`reasoning_effort`/`user_id` 可选透传,Usage 采集 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`(Anthropic 侧映射 `cache_read_input_tokens`);两 provider 共用 `post_stream_with_retry`(429/500/503 自动退避,payload 预序列化保证重试字节一致;错误信息带错误码语义提示)。`sse.rs` 是纯函数增量解析器。**改流式解析必须跑 `tests/sse_replay.rs` 与 `tests/openai_sse_mock.rs`**(真实抓包/mock 回归,覆盖多种 chunk 切分)。
 - `lex-core/src/agent/mod.rs` — AgentLoop 状态机;`on_tool_result: Option<ToolResultHook>` 工具结果回调(CLI 渲染 `⎿` 结果行用,无订阅者零开销);`recover_interrupt()` 供 Ctrl+C 打断后调用——清除历史尾部悬空 tool_use(无对应 tool_result),否则下轮请求被两端点 400 拒绝。
-- `lex-core/src/tools/` — `Tool` trait + 注册表;5 个内置工具 file_read/file_edit/bash_exec/grep_search/todo_write;`file_read.rs` 的 `require_str`/`resolve_path` 被其他工具复用;`grep_search` 是内置 ignore+regex 实现(不调外部 grep);只读工具同轮 join_all 并发,混入副作用严格串行(`agent/mod.rs`)。
+- `lex-core/src/tools/` — `Tool` trait + 注册表;6 个内置工具 file_read/file_edit/bash_exec/grep_search/todo_write/spawn_subagent;`file_read.rs` 的 `require_str`/`resolve_path` 被其他工具复用;`grep_search` 是内置 ignore+regex 实现(不调外部 grep);只读工具同轮 join_all 并发,混入副作用严格串行(`agent/mod.rs`)。**sub-agent 的依赖方向**:`tools/` 只定义 `SubagentSpawner` trait 与 `ToolContext.spawner`(面向抽象),实现在 `agent/subagent.rs`(`SubagentRuntime`)——`agent → tools` 单向不变,依赖不从 tools 反向指回 agent。
+- `lex-core/src/agent/subagent.rs` — `SubagentRuntime`(`SubagentSpawner` 实现)。子 agent = 独立 `AgentLoop`(独立历史/todos/`SecurityGuard`,但**规则表与 handler 从父级 clone,权限不高于父级**);注册表 = `ToolRegistry::subset(allowed_tools)`,spawn_subagent 永不随 `allowed_tools` 传入;深度硬上限 `MAX_SPAWN_DEPTH = 2`(主 0 → 子 1 → 孙 2),只有显式 `allow_nested` 且未到上限才给子级派生器,孙代结构性拿不到;system = 主 prompt 原文逐字节前缀 + 任务限定追加在末尾(`compose_subagent_system`)。子 agent `cache_strategy: None`——子注册表是 `subset`,tools 段必然与父级不同,前缀比对失去意义,故子 agent 不产生缓存遥测;派生只把 `run_turn` 的最终文本(结构化摘要)交回父级,子历史留在子 AgentLoop 内。
 - `lex-core/src/security/` — 三级权限(Auto/Confirm/Forbidden)。检查器内置于 `execute_tool_call` 执行路径,上层不可绕过;内置 Forbidden 默认规则(删 .git / force push / rm -rf 高危目标)用户配置**不可静默移除**;敏感文件读取后同轮网络外发命令启发式硬拦截(状态每轮 `reset_turn`)。`[security]` 段三级正则数组只能追加。有副作用的工具执行**必须**经过 `execute_tool_call` 内部的权限检查,该路径不可被上层绕过;拒绝/失败降级为 `ToolResult{is_error}` 回填模型,不上抛。
 - `lex-cli/src/` — 渲染与 UI;错误用 anyhow,提示词/交互输出用中文,anstream 输出 ANSI。确认与 REPL **共享同一个** `CliInput`(stdin BufReader 分开会丢预读输入)。UI 硬约束:所有颜色/ANSI 序列只从 `ui/theme.rs` 取,其他文件禁止裸 `\x1b[`;raw mode 期间换行必须显式 `\r\n`(`\n` 不回车,输入盒边框会错位);流式正文经 `ui/markdown.rs` 行缓冲渲染(粗体/斜体/行内代码/标题/列表/围栏,纯函数有单测,改渲染先跑 `editor_tests`/markdown 测试);提交输入盒 = 折叠(留 `› 回执`),退出 = 整盒清除。`ui/settings.rs` 是 `/settings` 设置页:`parse_command` 斜杠分发(唯一前缀命中,如 `/setting`)→ `SettingsView` 只读快照 → 渲染/状态机纯函数可单测;非 TTY 自动降级线性摘要;Key 只显示"环境变量 LEX_*",绝不回显;按键复用 `input.rs` 的 `event_bus()`/`RawGuard`。
 
@@ -58,7 +59,8 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 - ~~Phase 3:grep_search / todo_write、三级权限、只读并发~~(已完成,见 `examples/smoke/README.md` 第 8 节)。
 - ~~Phase 4:AGENTS.md、压缩触发、`ImplicitPrefixCacheStrategy`~~(已完成并通过 DeepSeek 端点真实冒烟,见 `examples/smoke/README.md` 第 9 节)。压缩要点:阈值 `context.limit × 0.8`、**会话内只成功触发一次**(无可切分历史/摘要失败不消耗机会)、摘要并入下一条 user 消息(保持角色交替,Anthropic 端点要求)、`[context]` 段 limit(默认 64000)/enabled 可配。
 - ~~Phase 5:错误边界打磨、可观测性、配置文档~~(已完成:provider 客户端 connect_timeout 防无界阻塞;`execute_tool_call` 记录工具耗时/结果日志;日志级别 `LEX_LOG` > `RUST_LOG` > warn(仅 stderr,不污染渲染);根目录 `README.md` 覆盖配置全字段、环境变量、安全模型、日志事件表)。
-- **Phase 6(计划就绪,未开工)**:sub-agent 派生机制与 ratatui TUI,实施计划见 `docs/superpowers/plans/2026-09-13-phase6-subagent.md` 与 `2026-09-13-phase6-tui.md`(逐任务 TDD,含完整测试代码;执行前先读)。关键前置:`ToolRegistry` 需改 Arc 存储 + `subset()`、`Tool` trait 加 `parallel_safe()`,均为 subagent 计划 Task 1/2 的产出;`build_loop` 改为注入 handler/todos 属 subagent 计划 Task 7,**尚未合入**(现签名仍是 `build_loop(cfg, cwd, Arc<CliInput>, renderer)`,内部自建 handler 与 `todos: Default::default()`)。TUI 计划是**按该改造已完成**来写的,故两份计划须串行——先跑完 subagent 再开 TUI,否则 TUI Task 7 会对不上签名。另:两份计划的测试基线写的是 111,实际已是 140。
+- ~~Phase 6 模块一:sub-agent 派生机制~~(已完成,计划 `docs/superpowers/plans/2026-09-13-phase6-subagent.md`)。要点:`ToolRegistry` 已改 Arc 存储并新增 `names`/`subset`;`Tool` trait 已加 `parallel_safe`(并发判定与只读语义解耦);`ThrottledProvider` 在 provider 层节流并发在途流(默认 3,许可持有至流结束);`spawn_subagent` 已进注册表,`build_loop` 已改为注入 handler/todos/spawner;跨层回归见 `lex-core/tests/subagent_e2e.rs`(主循环派发 + 只回摘要、Forbidden 规则在子 agent 内仍拦截)。
+- **Phase 6 模块二(计划就绪,未开工)**:ratatui TUI,实施计划见 `docs/superpowers/plans/2026-09-13-phase6-tui.md`(逐任务 TDD)。该计划是**按模块一改造已完成**来写的(`build_loop` 注入 handler/todos 已合入),现在可以直接开工。注:该计划的测试基线写的是 111,实际已是 158。
 - `/settings` 设置页(已完成):规格 `docs/superpowers/specs/2026-09-16-settings-page-design.md`,计划 `docs/superpowers/plans/2026-09-16-settings-page.md`;后续按模块填充编辑能力(写回 lex-code.toml + 热生效)。
 
 不做:GUI/IDE 插件、服务化、CI/CD(任务书明确:若启动需独立任务书,不与 sub-agent/TUI 混批)。

@@ -164,3 +164,38 @@ set LEX_OPENAI_API_KEY=<你的 DeepSeek Key>         (CMD)
 - [x] AGENTS.md 存在即注入、缺失/空文件跳过(单测覆盖)
 - [x] `ImplicitPrefixCacheStrategy`:system/tools 变化、历史改写、缩短均计违例;纯追加通过;invalidate 后基线重置(单测覆盖)
 - [x] 压缩一次触发语义:跳过/失败不消耗机会,成功后不再触发(集成测试 + 真实联调双重确认)
+
+## 10. Phase 6 模块一冒烟:子 agent 派生(spawn_subagent)
+
+新增:`tools/spawn_subagent.rs`(`Tool` 实现,参数 `task` / `allowed_tools` / `context` / `context_budget` / `allow_nested`)、`tools::SubagentSpawner` trait 与 `ToolContext.spawner`(工具层只面向抽象)、`agent/subagent.rs`(`SubagentRuntime`:子 agent = 独立 `AgentLoop`,权限继承父级、深度硬上限、system 用主 prompt 原文作前缀)、`provider/throttle.rs`(`ThrottledProvider`,并发在途流节流,默认 3)。
+
+### 步骤
+
+1. 交互模式启动(配置同第 7/9 节,DeepSeek 端点;建议 `LEX_LOG=info` 便于对照日志)。
+2. 输入下面这句(也可以自己换一个同样"多步 + 大范围"的子任务):
+
+   ```text
+   请用子 agent 排查 lex-core 下所有 TODO 并汇总成清单,allowed_tools 只给 file_read/grep_search
+   ```
+
+### 预期
+
+- 终端出现确认项(`⚠ 需要确认 [spawn_subagent]` + `派生子 agent 执行子任务: …` + `允许执行? [y/N]`)——子 agent 的权限等级与父级相同,**用的是同一个确认处理器**。
+- 子任务结束后,该工具的活动行下方出现 `⎿` 结果行(`ui/events.rs` 只打印结果**首行**,故这里就是子 agent 摘要的 `## 子任务摘要` 一行)。
+- 子 agent 的工具调用**照常渲染**成活动行(`●` + `⎿`):`SubagentRuntime` 把父级的 `on_tool_result` 回调一并传给了子 AgentLoop,所以子 agent 读了哪些文件、搜了什么,终端上看得到。
+- 但子 agent 的中间过程**不进主上下文**:主历史里只有一条 `spawn_subagent` 的 tool_result,内容就是摘要;子 agent 自己的消息历史留在它的 AgentLoop 里,不回流。这正是派生的意义——看得见进度,但不吃主上下文的 token。
+- 最终回复含"做了什么 / 关键结论 / 修改的文件"三段结构。
+- **子 agent 不产生缓存遥测**:`LEX_LOG=info` 下只有主循环的前缀缓存命中率日志,子 agent 那几轮没有命中率输出。这是设计决定而非缺陷——子 agent 的注册表是父级注册表的 `subset(allowed_tools)`,tools 段必然与父级不同,逐字节前缀比对在 system 段之后即告失效,汇报一个注定未命中的命中率没有意义。子 agent 仍把主 prompt 原文作为 system 逐字节前缀(`compose_subagent_system`),这是为了「主 prompt 段」在服务端侧仍可命中,与本地遥测是两回事。
+- 派生深度:子 agent 默认 `allow_nested=false`,其注册表里没有 `spawn_subagent`;显式传 `allow_nested=true` 时孙代可再派生一层,但孙代(第 2 层)结构性拿不到派生器——硬上限 2 层无法越过。
+
+### 真实联调记录
+
+待执行。本节步骤尚未在真实端点上跑过;跨层行为目前由 `lex-core/tests/subagent_e2e.rs` 的脚本化 Provider 端到端回归覆盖(不触网):主循环 → `spawn_subagent` → 子 agent → 摘要回填主历史(断言父级拿到的与子 agent 最终回复逐字节相同、子历史不外泄),以及 Forbidden 规则在子 agent 内仍硬拦截。
+
+### 验收清单
+
+- [ ] `spawn_subagent` 弹出确认项,子任务结果以 `⎿` 摘要行呈现
+- [ ] 子 agent 的工具活动在终端可见(`●`/`⎿` 行),但主历史只多出一条摘要 tool_result
+- [ ] 最终回复为结构化摘要(做了什么/关键结论/修改的文件)
+- [ ] 子 agent 内的工具调用走同一条权限检查路径,父级 Forbidden 规则在子 agent 内同样硬拦截
+- [ ] 子 agent 无缓存遥测输出(设计决定,理由见上)

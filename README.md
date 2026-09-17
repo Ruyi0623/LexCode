@@ -99,6 +99,11 @@ confirm = ["git\\s+rebase"]
 auto = ["cargo\\s+(fmt|clippy)"]       # 只读判定外,额外放行的命令模式
 ```
 
+子 agent(`spawn_subagent`)不构成权限旁路:
+
+- **权限等级继承父级**:子 agent 使用与父级**同一份规则表 + 同一个确认处理器**,不允许通过任务描述或 `allowed_tools` 配置降级;子 agent 的工具调用走同一条 `execute_tool_call` 路径,父级 Forbidden 规则在子 agent 内同样硬拦截(回归见 `lex-core/tests/subagent_e2e.rs`)。
+- **派生深度硬上限 2 层**:主循环为第 0 层,最多派生出子(1)与孙(2);`allow_nested` 只在未达上限时授予下一层派生器,孙代结构性拿不到 `spawn_subagent` 工具,无法越过上限。
+
 ## 上下文管理与 DeepSeek 前缀缓存
 
 - 会话启动时检测项目根 `AGENTS.md`,存在则注入 system prompt(一次组装,进入缓存前缀后逐字节不变)
@@ -156,4 +161,6 @@ examples/smoke/  真实 API 冒烟步骤与联调结论
 
 Phase 1–5 已完成:MVP 闭环、Provider 泛化(DeepSeek 真实冒烟,缓存命中 97%)、三级权限 + 只读并发、AGENTS.md 注入 + 上下文压缩 + 前缀缓存遥测、错误边界与可观测性打磨。
 
-明确不做:GUI / IDE 插件、多用户协作 / 服务化、CI/CD 集成、sub-agent 实现(仅预留 `ToolRegistry` 扩展点)。
+Phase 6 模块一已完成:`spawn_subagent` 子 agent 派生机制——独立上下文的子 agent 复用同一 AgentLoop 状态机,权限继承父级、深度硬上限 2 层、并发派生受 provider 层节流,只把结构化摘要交回主对话。模块二(ratatui TUI)计划已写、待实施。
+
+明确不做:GUI / IDE 插件、多用户协作 / 服务化、CI/CD 集成。
