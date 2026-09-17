@@ -1,3 +1,5 @@
+pub mod subagent;
+
 use crate::context::compress;
 use crate::error::{LexError, Result};
 use crate::message::{Block, Message};
@@ -54,10 +56,12 @@ pub struct AgentLoop {
 
 impl AgentLoop {
     /// 执行一轮用户输入:流式转发模型事件、执行工具、回填结果,直到产出无 tool_use 的文本回复。
+    /// 回调要求 `Send`:回调会被跨越 await 持有,不满足时整个 future 非 Send,
+    /// 子 agent 派生(`SubagentSpawner::spawn` 要求 Send)与被 spawn 的任务都无法调用本轮。
     pub async fn run_turn(
         &mut self,
         user_input: &str,
-        on_event: &mut dyn FnMut(&ProviderEvent),
+        on_event: &mut (dyn FnMut(&ProviderEvent) + Send),
     ) -> Result<String> {
         self.maybe_compress().await;
         // 压缩摘要并入本轮用户消息:保证角色交替不中断(Anthropic 端点要求)

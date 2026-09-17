@@ -52,6 +52,8 @@ fn compile(patterns: &[String], what: &str) -> Result<Vec<Regex>> {
 }
 
 /// 三级权限规则表(检查器)。正则编译一次,单实例跨轮复用。
+/// Clone 用于子 agent 继承父级规则表(权限继承:同一套规则,不额外放宽)。
+#[derive(Clone)]
 pub struct SecurityRules {
     forbidden: Vec<(&'static str, Regex)>,
     confirm: Vec<Regex>,
