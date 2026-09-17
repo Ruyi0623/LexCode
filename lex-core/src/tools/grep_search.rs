@@ -127,7 +127,7 @@ mod tests {
     }
 
     fn ctx(cwd: PathBuf) -> ToolContext {
-        ToolContext { cwd, shell: None, todos: Default::default() }
+        ToolContext { cwd, shell: None, todos: Default::default(), spawner: None }
     }
 
     #[tokio::test]

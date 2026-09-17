@@ -55,12 +55,34 @@ pub struct Todo {
     pub status: TodoStatus,
 }
 
-#[derive(Debug, Clone, Default)]
+/// 子 agent 派生请求(spawn_subagent 工具输入的规范化形态)
+#[derive(Debug, Clone)]
+pub struct SubagentRequest {
+    pub task: String,
+    pub allowed_tools: Vec<String>,
+    /// 父级传入的必要上下文片段(并入子 agent 首条任务消息)
+    pub context: Option<String>,
+    /// 子 agent 上下文 token 上限(缺省继承父级)
+    pub context_budget: Option<u32>,
+    /// 是否允许子 agent 再派生下一层(默认 false;深度硬上限见 agent/subagent.rs)
+    pub allow_nested: bool,
+}
+
+/// 子 agent 派生器抽象:由 agent 层实现,工具层只面向该抽象(保持 agent → tools 单向依赖)。
+#[async_trait::async_trait]
+pub trait SubagentSpawner: Send + Sync {
+    /// 执行子任务,返回子 agent 的结构化摘要(绝不返回子 agent 的完整消息历史)。
+    async fn spawn(&self, req: SubagentRequest) -> crate::error::Result<String>;
+}
+
+#[derive(Clone, Default)]
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub shell: Option<ShellCommand>,
     /// 会话级待办清单(todo_write 的存储;不落盘,生命周期同 AgentLoop)
     pub todos: Arc<Mutex<Vec<Todo>>>,
+    /// 子 agent 派生器;None = 当前环境不允许派生(深度达上限/未装配)
+    pub spawner: Option<Arc<dyn SubagentSpawner>>,
 }
 
 #[async_trait::async_trait]
@@ -180,5 +202,24 @@ mod tests {
         reg.register(Box::new(Dummy));
         reg.register(Box::new(FileRead));
         assert_eq!(reg.names(), vec!["dummy".to_string(), "file_read".to_string()]);
+    }
+
+    struct NullSpawner;
+    #[async_trait::async_trait]
+    impl SubagentSpawner for NullSpawner {
+        async fn spawn(&self, _req: SubagentRequest) -> crate::error::Result<String> {
+            Ok("子任务摘要".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_context_spawner_defaults_to_none_and_is_callable() {
+        let ctx: ToolContext = ToolContext::default();
+        assert!(ctx.spawner.is_none());
+        let ctx2 = ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default(), spawner: Some(std::sync::Arc::new(NullSpawner)) };
+        let s = ctx2.spawner.as_ref().unwrap().spawn(SubagentRequest {
+            task: "t".into(), allowed_tools: vec![], context: None, context_budget: None, allow_nested: false,
+        }).await.unwrap();
+        assert_eq!(s, "子任务摘要");
     }
 }

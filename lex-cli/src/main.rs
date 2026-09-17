@@ -124,7 +124,8 @@ fn build_loop(
         provider,
         registry,
         handler: Box::new(input),
-        tool_ctx: ToolContext { cwd, shell, todos: Default::default() },
+        // spawner 占位:子 agent 派生器由 Task 7 在装配阶段注入
+        tool_ctx: ToolContext { cwd, shell, todos: Default::default(), spawner: None },
         security: SecurityGuard::new(SecurityRules::build(&cfg.security)?),
         system,
         history: vec![],

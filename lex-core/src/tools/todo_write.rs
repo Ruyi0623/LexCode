@@ -85,7 +85,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn ctx() -> ToolContext {
-        ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default() }
+        ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default(), spawner: None }
     }
 
     #[tokio::test]

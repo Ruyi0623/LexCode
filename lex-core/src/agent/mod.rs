@@ -280,6 +280,7 @@ mod hooks {
                 cwd: std::path::PathBuf::from("."),
                 shell: None,
                 todos: Default::default(),
+                spawner: None,
             },
             security: crate::security::SecurityGuard::new(crate::security::SecurityRules::defaults()),
             system: String::new(),

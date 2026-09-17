@@ -69,7 +69,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn ctx() -> ToolContext {
-        ToolContext { cwd: PathBuf::from(std::env::temp_dir().join("lex-fileedit-test")), shell: None, todos: Default::default() }
+        ToolContext { cwd: PathBuf::from(std::env::temp_dir().join("lex-fileedit-test")), shell: None, todos: Default::default(), spawner: None }
     }
 
     #[tokio::test]

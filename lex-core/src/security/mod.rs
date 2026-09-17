@@ -187,7 +187,7 @@ mod tests {
         }
     }
 
-    fn ctx() -> ToolContext { ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default() } }
+    fn ctx() -> ToolContext { ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default(), spawner: None } }
     fn guard() -> SecurityGuard { SecurityGuard::new(SecurityRules::defaults()) }
 
     #[tokio::test]

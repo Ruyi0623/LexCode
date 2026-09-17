@@ -74,7 +74,7 @@ fn make_loop(
         provider: Box::new(mock),
         registry: ToolRegistry::new(),
         handler: Box::new(AllowAll),
-        tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default() },
+        tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default(), spawner: None },
         security: SecurityGuard::new(SecurityRules::defaults()),
         system: String::new(),
         history: seeded_history(),
