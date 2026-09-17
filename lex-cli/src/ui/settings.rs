@@ -357,10 +357,19 @@ mod tests {
         }
     }
 
-    fn anthropic_cfg() -> Config {
-        let d = std::env::temp_dir().join("lex-settings-test-a");
-        let _ = std::fs::remove_dir_all(&d);
+    /// 每次调用分配独立临时目录:cfg 构造器被同二进制内多个测试并行调用,
+    /// 共享固定路径会互相删除/覆写目录,导致偶发 load 失败(flaky)。
+    /// 不复用固定路径也就不需要预先 remove_dir_all——破坏性操作正是冲突源。
+    fn unique_dir(tag: &str) -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("lex-settings-test-{tag}-{n}"));
         std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn anthropic_cfg() -> Config {
+        let d = unique_dir("a");
         std::fs::write(
             d.join("lex-code.toml"),
             "[anthropic]\nbase_url = \"https://api.test\"\nmodel = \"claude-x\"\n",
@@ -370,9 +379,7 @@ mod tests {
     }
 
     fn openai_cfg() -> Config {
-        let d = std::env::temp_dir().join("lex-settings-test-o");
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = unique_dir("o");
         std::fs::write(
             d.join("lex-code.toml"),
             "provider = \"openai\"\n[openai]\nbase_url = \"https://api.test\"\nmodel = \"deepseek-x\"\nthinking = \"enabled\"\nreasoning_effort = \"high\"\n",
