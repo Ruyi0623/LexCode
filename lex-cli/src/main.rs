@@ -73,13 +73,14 @@ fn build_system_prompt(cfg: &Config, cwd: &Path) -> Result<String> {
 fn build_loop(
     cfg: &Config,
     cwd: PathBuf,
-    input: std::sync::Arc<confirm::CliInput>,
-    renderer: &Arc<Mutex<ui::events::Renderer>>,
+    handler: std::sync::Arc<dyn lex_core::security::PermissionHandler>,
+    todos: std::sync::Arc<std::sync::Mutex<Vec<lex_core::tools::Todo>>>,
+    on_tool_result: Option<ToolResultHook>,
 ) -> Result<AgentLoop> {
     let api_key = resolve_api_key(&cfg.provider)?;
     // 切换 provider 只改配置,不改 Agent Loop:两者实现同一个 Provider trait
-    let provider: Box<dyn Provider> = match cfg.provider.as_str() {
-        "openai" => Box::new(OpenAiCompatProvider::with_defaults(
+    let inner: std::sync::Arc<dyn Provider> = match cfg.provider.as_str() {
+        "openai" => std::sync::Arc::new(OpenAiCompatProvider::with_defaults(
             cfg.openai.base_url.clone(),
             cfg.openai.model.clone(),
             OpenAiParams {
@@ -90,13 +91,15 @@ fn build_loop(
             },
             api_key,
         )?),
-        _ => Box::new(AnthropicProvider::with_defaults(
+        _ => std::sync::Arc::new(AnthropicProvider::with_defaults(
             cfg.anthropic.base_url.clone(),
             cfg.anthropic.model.clone(),
             cfg.anthropic.max_tokens,
             api_key,
         )?),
     };
+    // 主循环与所有子 agent 共享同一并发节流(默认 3 条在途流)
+    let throttled = lex_core::provider::throttle::ThrottledProvider::new(inner, lex_core::provider::throttle::MAX_CONCURRENT_STREAMS);
 
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FileRead));
@@ -104,6 +107,8 @@ fn build_loop(
     registry.register(Box::new(BashExec));
     registry.register(Box::new(GrepSearch));
     registry.register(Box::new(TodoWrite));
+    registry.register(Box::new(lex_core::tools::spawn_subagent::SpawnSubagent));
+    let registry = std::sync::Arc::new(registry);
 
     let shell: Option<ShellCommand> = cfg.shell.command.clone().map(|command| ShellCommand {
         command,
@@ -120,13 +125,30 @@ fn build_loop(
     // 隐式前缀缓存策略:两个 provider 通用(前缀一致性校验 + 命中率遥测)
     let cache_strategy: std::sync::Arc<dyn CacheStrategy> =
         std::sync::Arc::new(ImplicitPrefixCacheStrategy::new());
+
+    let rules = SecurityRules::build(&cfg.security)?;
+    // depth=0 派生器:与主循环共享节流 provider / 注册表 / 权限配置,子 agent 权限不高于父级
+    let spawner: std::sync::Arc<dyn lex_core::tools::SubagentSpawner> = std::sync::Arc::new(
+        lex_core::agent::subagent::SubagentRuntime::new(
+            throttled.clone(),
+            system.clone(),
+            handler.clone(),
+            rules.clone(),
+            cwd.clone(),
+            shell.clone(),
+            registry.clone(),
+            cfg.max_turns,
+            cfg.context.enabled.then_some(cfg.context.limit),
+            on_tool_result.clone(),
+        ),
+    );
+
     Ok(AgentLoop {
-        provider,
-        registry,
-        handler: Box::new(input),
-        // spawner 占位:子 agent 派生器由 Task 7 在装配阶段注入
-        tool_ctx: ToolContext { cwd, shell, todos: Default::default(), spawner: None },
-        security: SecurityGuard::new(SecurityRules::build(&cfg.security)?),
+        provider: Box::new(throttled),
+        registry: (*registry).clone(),
+        handler: Box::new(handler),
+        tool_ctx: ToolContext { cwd, shell, todos, spawner: Some(spawner) },
+        security: SecurityGuard::new(rules),
         system,
         history: vec![],
         max_turns: cfg.max_turns,
@@ -134,7 +156,7 @@ fn build_loop(
         context_limit: cfg.context.enabled.then_some(cfg.context.limit),
         pending_summary: None,
         compress_attempted: false,
-        on_tool_result: Some(make_result_hook(renderer)),
+        on_tool_result,
     })
 }
 
@@ -185,8 +207,11 @@ async fn run() -> Result<()> {
     let cwd = std::fs::canonicalize(&cli.cwd).context("工作目录不存在")?;
     let cfg = Config::load(&cwd)?;
     let input = std::sync::Arc::new(confirm::CliInput::new());
+    let handler: std::sync::Arc<dyn lex_core::security::PermissionHandler> = input.clone();
+    // 待办清单提升到 run() 层:主循环与设置页/TUI 复用同一个 Arc
+    let todos: std::sync::Arc<std::sync::Mutex<Vec<lex_core::tools::Todo>>> = Default::default();
     let renderer = Arc::new(Mutex::new(ui::events::Renderer::new()));
-    let mut agent = build_loop(&cfg, cwd.clone(), input.clone(), &renderer)?;
+    let mut agent = build_loop(&cfg, cwd.clone(), handler, todos, Some(make_result_hook(&renderer)))?;
 
     if cli.task.is_empty() {
         interactive_session(&mut agent, &input, &cfg, &cwd).await
