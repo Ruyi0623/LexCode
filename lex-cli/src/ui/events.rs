@@ -160,6 +160,7 @@ fn summarize(name: &str, input: &Value) -> String {
         "file_read" | "file_edit" => input.get("path").and_then(Value::as_str).unwrap_or("<未知路径>"),
         "grep_search" => input.get("pattern").and_then(Value::as_str).unwrap_or("<未知模式>"),
         "todo_write" => "更新待办清单",
+        "spawn_subagent" => input.get("task").and_then(Value::as_str).unwrap_or("<未知任务>"),
         _ => "",
     };
     let mut s: String = raw.trim().chars().take(80).collect();
