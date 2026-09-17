@@ -48,6 +48,10 @@ pub fn describe_call(name: &str, input: &Value) -> String {
             format!("搜索内容: {p}")
         }
         "todo_write" => "更新待办清单".to_string(),
+        "spawn_subagent" => {
+            let t = input.get("task").and_then(Value::as_str).unwrap_or("<未知任务>");
+            format!("派生子 agent 执行子任务: {t}")
+        }
         _ => format!("调用 {name}: {}", serde_json::to_string(input).unwrap_or_else(|_| "<无法序列化>".into())),
     }
 }
