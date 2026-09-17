@@ -139,11 +139,11 @@ impl AgentLoop {
 
                 state_msg(State::ExecutingTools);
                 let mut results: Vec<(&str, String, bool)> = Vec::new();
-                // 并发规则:全部只读 → join_all 并发;混入有副作用的工具 → 严格串行
-                let all_read_only = tool_uses.iter().all(|(_, name, _)| {
-                    self.registry.get(name).map(|t| t.read_only()).unwrap_or(false)
+                // 并发规则:全部 parallel_safe → join_all 并发;混入不可并发的工具 → 严格串行
+                let all_parallel = tool_uses.iter().all(|(_, name, _)| {
+                    self.registry.get(name).map(|t| t.parallel_safe()).unwrap_or(false)
                 });
-                if all_read_only && tool_uses.len() > 1 {
+                if all_parallel && tool_uses.len() > 1 {
                     let blocks = futures::future::join_all(tool_uses.iter().map(|(id, name, input)| {
                         execute_tool_call(&self.registry, self.handler.as_ref(), &self.tool_ctx, &self.security, id, name, input.clone())
                     }))

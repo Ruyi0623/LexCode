@@ -69,6 +69,11 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn schema(&self) -> Value;
     fn read_only(&self) -> bool;
+    /// 是否可与同轮其他工具并发执行。默认与 read_only 一致;
+    /// spawn_subagent 覆写为 true(子任务在独立上下文内执行,多个独立子任务允许并发派生)。
+    fn parallel_safe(&self) -> bool {
+        self.read_only()
+    }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String>;
 }
 
@@ -135,6 +140,12 @@ mod tests {
         fn schema(&self) -> serde_json::Value { json!({"type":"object"}) }
         fn read_only(&self) -> bool { true }
         async fn execute(&self, _input: serde_json::Value, _ctx: &ToolContext) -> crate::error::Result<String> { Ok("ok".into()) }
+    }
+
+    #[test]
+    fn parallel_safe_defaults_to_read_only() {
+        assert!(Dummy.parallel_safe());          // Dummy read_only = true
+        assert!(!super::file_edit::FileEdit.parallel_safe()); // FileEdit read_only = false
     }
 
     #[test]
