@@ -22,6 +22,37 @@
 
 ---
 
+## 开工前已知偏差(2026-09-17 核对,先读本节再动手)
+
+> 对全文约 75 处「关于现存代码」的断言逐条比对真实仓库:约 57 处一致,**20 处不符,其中 7 处阻塞**。以下按「不修就做不下去」排序。本节优先于下文正文。
+
+### 阻塞项
+
+1. **跨 crate 编译断链(最关键)**:Task 3 给 `ToolContext` 加 `spawner` 字段后,`lex-cli/src/main.rs:127` 立即编译失败——它在**生产函数 `build_loop` 内,不是测试代码**。而计划要到 Task 7 才改 main.rs。因此 **Task 3/4/5/6 各自 Step 4 的「`cargo test --workspace` 全部 PASS」不可达**。
+   - 处理:Task 3~6 的验收改用 `cargo test -p lex-core`;或在 Task 3 就一并补 `main.rs:127`(则 Task 7 相应缩小)。
+2. **`ToolContext` 字面量实为 13 处,不是下文所写的 10 处**,且含 1 处生产代码。完整清单:
+   `lex-core/src/agent/mod.rs:279`、`security/mod.rs:190`、`tools/{grep_search:130, todo_write:88, bash_exec:93, file_read:47, file_edit:72}`、`tests/agent_loop.rs:65,126,158,199`、`tests/context_flow.rs:77`、**`lex-cli/src/main.rs:127`**。
+3. **Task 6 的 `depth_cap_enforced_defensively` 测试与实现互斥**:测试用**空注册表** + `allowed_tools:["file_read"]`,断言错误文本含「上限」;但实现(L923-934)是**先查未知工具、后查深度** → 空注册表下 `file_read` 先被判为未知工具,断言永不成立。
+   - 处理:测试改用**非空注册表**(先注册 `file_read`)再验深度;或调换实现的校验顺序,并同步改 `unknown_allowed_tool_is_rejected`。
+4. **两处 `.boxed()` 缺 import**:Task 6 的 subagent.rs 测试(L686)与 Task 8 的 e2e(L1161)都用了 `.boxed()`,但 import 列表无 `futures::StreamExt` → E0599。对照 `lex-core/tests/sse_mock.rs:1` 等三处均为显式 import。
+5. **e2e 裸 `Result` 未绑定**(L1159):import 列表只有全限定写法,`-> Result<StreamResult>` 的 `Result` 无来源 → E0412。
+6. **`AGENTS.md` 已不存在**:Task 8 要求修改它,但该文件已从工作区删除(内容迁至未跟踪的 `CLAUDE.md`)。注意 `context/agents_md.rs:9` 只读 `cwd/AGENTS.md`,**新建它会被运行时重新注入进模型系统提示词**——这是有副作用的动作,不是纯文档编辑,动手前先定基准文件。
+7. **`git add -A` 会误提**:工作区已存在未提交的 `D AGENTS.md` / `?? CLAUDE.md`(重命名),`git add -A` 会把它一并卷入本计划的提交。改为显式 `git add <具体文件>`。
+
+### 语义失真(能编译,但方向错)
+
+- **Task 2 与运行时提示词冲突**:`parallel_safe()` 意在让非只读工具并发,但 `assets/coding-agent-system-prompt.md:30` 明确对模型说「有副作用的操作(写文件、执行命令)必须串行执行」。Task 8 的文档清单未列这条同步,不改则模型仍按旧规则自我约束。
+- **「保住隐式前缀缓存」无代码路径支撑**:子 agent 用 `subset()` 注册表,tools 段必然与父级不同(`provider/cache.rs:88-90` 逐字节比对即判「tools 段变化」);且子 AgentLoop 设了 `cache_strategy: None`,连 `prepare` 都不调用。故 L1266 要求的「子 agent 缓存遥测」与 L971 的 `None` 不可兼得;验收表(L1292)相关表述应删除或改为「不适用」。
+- **todos 复用自相矛盾**:Task 7 称把 todos 提升到 `run()` 层注入 runtime,Task 6 实现却给子 loop 新建 `Arc::new(Mutex::new(Vec::new()))`,结构体 `todos` 字段全程不被读取。
+- **任务编号错位 4 处**:L139 把 Task 4 的产出记作 Task 6;L33 把 Task 6 记作 Task 7;L305、L478 把 Task 7 的 main.rs 装配记作 Task 8。
+- **反向依赖未标注**:Task 4 的 `tool_metadata` 测试消费 Task 2 的 `parallel_safe`,Interfaces 未标出。
+
+### 基线
+
+- 测试总数**实为 140**(Global Constraints 里写的 111、L1273 的「≥115」均为旧数)。本次核对时基线全绿。
+
+---
+
 ### Task 1: ToolRegistry 内部改 Arc 存储,新增 `names()` / `subset()` / Clone
 
 **Files:**
