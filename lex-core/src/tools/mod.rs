@@ -79,9 +79,9 @@ pub struct ToolDefinition {
     pub input_schema: Value,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ToolRegistry {
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
@@ -90,11 +90,27 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.push(tool);
+        self.tools.push(Arc::from(tool));
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.tools.iter().map(|t| t.name().to_string()).collect()
+    }
+
+    /// 按 allowed 工具名过滤出子注册表(保持插入顺序;工具实例经 Arc 共享,无重复构建)
+    pub fn subset(&self, allowed: &[String]) -> ToolRegistry {
+        ToolRegistry {
+            tools: self
+                .tools
+                .iter()
+                .filter(|t| allowed.iter().any(|a| a == t.name()))
+                .cloned()
+                .collect(),
+        }
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
@@ -132,5 +148,26 @@ mod tests {
         assert_eq!(defs[1].name, "file_read");
         assert!(reg.get("file_read").is_some());
         assert!(reg.get("nope").is_none());
+    }
+
+    #[test]
+    fn subset_filters_by_name_and_keeps_order() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(Dummy));
+        reg.register(Box::new(FileRead));
+        let sub = reg.subset(&["file_read".to_string()]);
+        let names = sub.names();
+        assert_eq!(names, vec!["file_read".to_string()]);
+        assert!(sub.get("dummy").is_none());
+        // subset 与原注册表互不影响
+        assert!(reg.get("dummy").is_some());
+    }
+
+    #[test]
+    fn names_lists_all_in_insertion_order() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(Dummy));
+        reg.register(Box::new(FileRead));
+        assert_eq!(reg.names(), vec!["dummy".to_string(), "file_read".to_string()]);
     }
 }
