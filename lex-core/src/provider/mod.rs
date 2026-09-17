@@ -4,6 +4,7 @@ pub mod cache;
 pub mod openai_compat;
 pub mod openai_types;
 pub mod sse;
+pub mod throttle;
 
 use crate::error::Result;
 use crate::message::{Message, Usage};
