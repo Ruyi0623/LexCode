@@ -23,9 +23,12 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 
 工具链:rustup `stable-x86_64-pc-windows-gnu` + WinLibs gcc(`D:\mingw64\bin`)。cargo 走 rsproxy 镜像(`~/.cargo/config.toml`)。
 
+测试夹具若用固定临时目录(如 `lex-core/src/config.rs` 的 `tests::temp_dir(tag)` → `%TEMP%\lex-config-test-{tag}`,且先 `remove_dir_all`),**新测试必须用互不相同的 tag** —— 共用 tag 会在并行跑测试时互相删目录(本项目据此出过 flake)。
+
 ## 环境坑点(重要)
 
 - **本文件会被自身产品加载**:lex-code 启动时把项目根 `AGENTS.md` 注入模型系统提示词(`context/agents_md.rs`)。改这里 = 改运行时模型行为;冒烟时模型会读它,措辞要当"给模型的指令"对待。
+- **本文件与 `CLAUDE.md` 必须逐字节相同**:两者是同源副本(`CLAUDE.md` 是 Claude Code 读的那份,`AGENTS.md` 是产品运行时注入的那份),由 `lex-core/tests/docs_consistency.rs` **强制**——只改一份会让 `cargo test` 直接失败。**改完 `AGENTS.md` 后把整份内容覆盖写入 `CLAUDE.md`**(不要手工在两份里各改一遍,行尾/空格差异即失败),可用 `Get-FileHash AGENTS.md, CLAUDE.md -Algorithm SHA256` 自证。
 - **仓库路径含中文**(`D:\项目\`),GNU dlltool 不兼容 → `.cargo/config.toml` 已把 target-dir 重定向到 `D:/lexcode-target`。**不要删除该配置**。
 - 运行时按以下顺序查找系统提示词:配置 `system_prompt_path` → `<cwd>/assets/` → `<exe目录>/assets/`。对 release 二进制冒烟时需把 `assets/coding-agent-system-prompt.md` 复制到 exe 旁。
 - 配置优先级:env(`LEX_*`)> 项目级 `lex-code.toml` > 内置默认。**Key 只从环境变量读**(`LEX_ANTHROPIC_API_KEY` / `LEX_OPENAI_API_KEY`),TOML 不放凭证;base_url/model 必须显式配置,代码零硬编码默认 URL/模型。本机已在用户级环境变量永久配置这两把 Key(同一把 DeepSeek Key,对 OpenAI 端点与 Anthropic 兼容端点通用),新终端可直接跑冒烟。
@@ -52,6 +55,7 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 - 多轮历史的 tool_result 必须合入**单条 user 消息**;DeepSeek 兼容端点要求 `thinking` 块原样回传(空 signature 可接受),OpenAI 兼容端点要求 assistant 历史 `reasoning_content` 原样回传(缺失 400)。
 - 路径一律 `PathBuf`;`file_edit` 保留文件原行尾(CRLF/LF);三平台(Linux/Windows/macOS)行为一致,bash_exec 平台默认 Unix `sh -c` / Windows `cmd /C`。
 - Forbidden 级安全规则(删 `.git`、force push、敏感文件外发)用户配置不可静默覆盖。
+- 提交用**显式 `git add <文件>`**,**禁止 `git add -A`**;提交信息用**中文 conventional commits**(如 `feat(agent): …` / `fix(cli): …` / `docs: …` / `test(agent): …`)。
 
 ## 配置:子 agent 派生预算(`[agent]` 段)
 
