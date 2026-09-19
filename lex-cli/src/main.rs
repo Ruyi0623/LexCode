@@ -76,6 +76,7 @@ fn build_loop(
     handler: std::sync::Arc<dyn lex_core::security::PermissionHandler>,
     todos: std::sync::Arc<std::sync::Mutex<Vec<lex_core::tools::Todo>>>,
     on_tool_result: Option<ToolResultHook>,
+    on_child_event: Option<lex_core::agent::ChildEventHook>,
 ) -> Result<AgentLoop> {
     let api_key = resolve_api_key(&cfg.provider)?;
     // 切换 provider 只改配置,不改 Agent Loop:两者实现同一个 Provider trait
@@ -144,8 +145,8 @@ fn build_loop(
                 context_limit,
                 max_children_per_turn: cfg.agent.max_children_per_turn,
             },
-            // 子 agent 活动走子事件通道;T4 才把这枚钩子接到渲染器上
-            lex_core::agent::SubagentHooks { on_child_event: None },
+            // 子 agent 活动行转发到共享渲染器(带 [子N] 归属)
+            lex_core::agent::SubagentHooks { on_child_event },
         ),
     );
 
@@ -171,6 +172,14 @@ fn make_result_hook(renderer: &Arc<Mutex<ui::events::Renderer>>) -> ToolResultHo
     let r = Arc::clone(renderer);
     Arc::new(move |info| {
         r.lock().unwrap_or_else(|p| p.into_inner()).tool_result(info);
+    })
+}
+
+/// 子 agent 活动行回调:转发到共享渲染器打印带 [子N] 归属的活动行
+fn make_child_event_hook(renderer: &Arc<Mutex<ui::events::Renderer>>) -> lex_core::agent::ChildEventHook {
+    let r = Arc::clone(renderer);
+    Arc::new(move |ev: &lex_core::agent::ChildEvent| {
+        r.lock().unwrap_or_else(|p| p.into_inner()).child_event(ev);
     })
 }
 
@@ -217,7 +226,14 @@ async fn run() -> Result<()> {
     // 待办清单在 run() 层建好即交给 build_loop(run() 自身不再持有);TUI 模块为既定的后续复用方
     let todos: std::sync::Arc<std::sync::Mutex<Vec<lex_core::tools::Todo>>> = Default::default();
     let renderer = Arc::new(Mutex::new(ui::events::Renderer::new()));
-    let mut agent = build_loop(&cfg, cwd.clone(), handler, todos, Some(make_result_hook(&renderer)))?;
+    let mut agent = build_loop(
+        &cfg,
+        cwd.clone(),
+        handler,
+        todos,
+        Some(make_result_hook(&renderer)),
+        Some(make_child_event_hook(&renderer)),
+    )?;
 
     if cli.task.is_empty() {
         interactive_session(&mut agent, &input, &cfg, &cwd).await

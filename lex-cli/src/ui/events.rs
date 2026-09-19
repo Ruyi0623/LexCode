@@ -1,4 +1,4 @@
-use lex_core::agent::ToolResultInfo;
+use lex_core::agent::{ChildEvent, ChildEventKind, ToolResultInfo};
 use lex_core::message::Usage;
 use lex_core::provider::ProviderEvent;
 use serde_json::Value;
@@ -66,6 +66,15 @@ impl Renderer {
         if self.pending_tools == 0 {
             self.flush_pending_usage();
         }
+    }
+
+    /// 子 agent 活动行(由 ChildEventHook 回调驱动)。
+    /// 有意**不触碰** `pending_tools`:子 agent 的 ●/⎿ 自成一套,父级的轮次尾注只由父级自己的工具决定。
+    pub fn child_event(&mut self, ev: &ChildEvent) {
+        let Some(line) = render_child_event(ev) else { return };
+        self.break_thinking();
+        self.flush_markdown();
+        anstream::println!("{line}");
     }
 
     /// 打印延迟的轮次 token 尾注(若未收到 Completed 则无事发生)
@@ -153,6 +162,32 @@ impl Default for Renderer {
     }
 }
 
+/// 子 agent 事件的单行渲染。返回 None 表示该事件不输出。
+/// 颜色只引用 theme.rs 常量(项目硬约束);归属由 [子N] 标签承载,
+/// 整行用 DIM 以区别于父级的 ACCENT ●。
+fn render_child_event(ev: &ChildEvent) -> Option<String> {
+    match &ev.kind {
+        ChildEventKind::Started { task } => {
+            let first: String = task.lines().next().unwrap_or_default().chars().take(80).collect();
+            Some(format!("  {}⤷ [子{}] 派生: {}{}", theme::DIM, ev.child_id, first, theme::RESET))
+        }
+        ChildEventKind::ToolCall { name, input } => Some(format!(
+            "  {}● [子{}] {}({}){}",
+            theme::DIM,
+            ev.child_id,
+            name,
+            summarize(name, input),
+            theme::RESET
+        )),
+        ChildEventKind::ToolResult { first_line, is_error, .. } => {
+            let color = if *is_error { theme::ERROR } else { theme::DIM };
+            Some(format!("  {}⎿ [子{}] {}{}", color, ev.child_id, first_line, theme::RESET))
+        }
+        // 子 agent 的结局已由父级那条 ⎿ 行(摘要首行)体现,再打一行是冗余噪声
+        ChildEventKind::Finished { .. } => None,
+    }
+}
+
 /// 工具参数单行摘要(≤80 字符)
 fn summarize(name: &str, input: &Value) -> String {
     let raw = match name {
@@ -168,4 +203,57 @@ fn summarize(name: &str, input: &Value) -> String {
         s.push('…');
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(id: u32, kind: ChildEventKind) -> ChildEvent {
+        ChildEvent { child_id: id, depth: 1, kind }
+    }
+
+    #[test]
+    fn summarize_covers_spawn_subagent_task() {
+        // 既有的 spawn_subagent 分支不得回归
+        assert_eq!(summarize("spawn_subagent", &serde_json::json!({"task": "排查"})), "排查");
+        assert_eq!(summarize("spawn_subagent", &serde_json::json!({})), "<未知任务>");
+    }
+
+    #[test]
+    fn rendered_child_events_carry_attribution_and_finished_is_silent() {
+        // 归属标记 [子N] 必须出现在每一条会输出的事件里;
+        // Finished 不输出(其结局已由父级 ⎿ 行体现)
+        let started = render_child_event(&ev(2, ChildEventKind::Started { task: "排查".into() }));
+        assert!(started.as_deref().unwrap_or_default().contains("[子2]"), "Started: {started:?}");
+        assert!(started.as_deref().unwrap_or_default().contains("排查"));
+
+        let call = render_child_event(&ev(2, ChildEventKind::ToolCall {
+            name: "file_read".into(),
+            input: serde_json::json!({"path": "a.rs"}),
+        }));
+        assert!(call.as_deref().unwrap_or_default().contains("[子2]"), "ToolCall: {call:?}");
+        assert!(call.as_deref().unwrap_or_default().contains("a.rs"), "应复用 summarize 的参数摘要: {call:?}");
+
+        let ok = render_child_event(&ev(2, ChildEventKind::ToolResult {
+            name: "file_read".into(), first_line: "读到了".into(), is_error: false,
+        }));
+        assert!(ok.as_deref().unwrap_or_default().contains("[子2]"), "ToolResult: {ok:?}");
+
+        assert!(render_child_event(&ev(2, ChildEventKind::Finished { summary_first_line: "done".into() })).is_none(),
+            "Finished 不应输出");
+    }
+
+    #[test]
+    fn child_events_do_not_disturb_parent_pending_tools() {
+        // 计数平衡:子 agent 的活动不得触碰父级的 pending_tools。
+        // 旧实现下子级的 ⎿ 会减该计数却无 ● 来加,使父级 token 尾注提前打印。
+        let mut r = Renderer::new();
+        r.pending_tools = 2;
+        r.child_event(&ev(1, ChildEventKind::Started { task: "排查".into() }));
+        r.child_event(&ev(1, ChildEventKind::ToolCall { name: "file_read".into(), input: serde_json::json!({"path": "a"}) }));
+        r.child_event(&ev(1, ChildEventKind::ToolResult { name: "file_read".into(), first_line: "ok".into(), is_error: false }));
+        r.child_event(&ev(1, ChildEventKind::Finished { summary_first_line: "done".into() }));
+        assert_eq!(r.pending_tools, 2, "子事件不得改动父级计数");
+    }
 }
