@@ -244,7 +244,13 @@ async fn run() -> Result<()> {
                 renderer.lock().unwrap_or_else(|p| p.into_inner()).render(e);
             })
             .await?;
-        println!("\n{text}");
+        // 收尾正文:上面已随流式事件渲染打印过一次,故
+        // - TTY:不再重复输出一遍;
+        // - 非 TTY(管道/重定向):补一份**渲染过的**完整正文,便于脚本消费
+        //   —— 直接打印原文会让 `**粗体**`、`` `代码` `` 以字面形式出现在末尾。
+        if let Some(tail) = ui::markdown::one_shot_tail(&text, std::io::stdout().is_tty()) {
+            anstream::print!("{tail}");
+        }
         Ok(())
     }
 }

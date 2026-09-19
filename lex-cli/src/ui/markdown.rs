@@ -42,11 +42,13 @@ impl MarkdownStream {
         if t.starts_with('#') {
             let stripped = t.trim_start_matches('#').trim_start();
             if !stripped.is_empty() {
-                return theme::bold(stripped);
+                // 标题整体加粗,且内部行内样式仍要生效 —— 否则 `# **粗体**` 会显示字面星号
+                return theme::bold(&replace_inline(stripped));
             }
         }
         if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
-            return format!("{}•{} {rest}", theme::ACCENT, theme::RESET);
+            // 列表项同样必须过一遍行内样式:模型最常用的 `- **标签**: …` 形状不能显示字面星号
+            return format!("{}•{} {}", theme::ACCENT, theme::RESET, replace_inline(rest));
         }
         replace_inline(t)
     }
@@ -56,6 +58,29 @@ impl Default for MarkdownStream {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 把一整段文本按行渲染为终端 Markdown(非流式场景用)。
+pub fn render_str(text: &str) -> String {
+    let mut md = MarkdownStream::new();
+    let mut out = String::new();
+    md.feed(text, &mut |s| out.push_str(s));
+    md.flush(&mut |s| out.push_str(s));
+    out
+}
+
+/// 单轮模式(一次性任务)收尾该打印什么:
+/// - stdout 是 TTY(交互终端):正文已随流式事件渲染打印过 → `None`,不重复输出;
+/// - stdout 非 TTY(管道/重定向):返回**渲染过的**完整正文,给脚本一份干净结果。
+pub fn one_shot_tail(text: &str, stdout_is_tty: bool) -> Option<String> {
+    if stdout_is_tty {
+        return None;
+    }
+    let mut out = render_str(text);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Some(out)
 }
 
 /// 行内样式:**粗体**、*斜体*、`代码`。斜体只在 `*` 后跟非空白时开启,
@@ -179,5 +204,49 @@ mod tests {
             render(&["**粗体"]),
             format!("{}粗体{}", theme::BOLD, theme::RESET)
         );
+    }
+
+    #[test]
+    fn inline_styles_apply_inside_bullet_and_heading() {
+        // 回归:模型最常用的形状恰是「列表项 + 粗体标签」——本项目自己的子 agent 摘要格式
+        // (`- **做了什么**: …`)就是这种。修复前 render_line 对列表项/标题是直接 return 的,
+        // 跳过了 replace_inline,于是终端上显示字面 `**`。
+        assert_eq!(
+            render(&["- **做了什么**: 读了文件\n"]),
+            format!(
+                "{}•{} {}做了什么{}: 读了文件\n",
+                theme::ACCENT,
+                theme::RESET,
+                theme::BOLD,
+                theme::RESET
+            )
+        );
+        // 标题内的行内代码同样要生效(标题整体加粗)
+        assert_eq!(
+            render(&["# 用法 `--help`\n"]),
+            format!(
+                "{}用法 {}--help{}{}\n",
+                theme::BOLD,
+                theme::CODE,
+                theme::RESET,
+                theme::RESET
+            )
+        );
+    }
+
+    #[test]
+    fn one_shot_tail_skips_reprint_on_tty_and_renders_for_pipes() {
+        // 单轮模式收尾:TTY 下正文已随流式渲染打印过,再打印一遍就是重复输出;
+        // 非 TTY(管道/重定向)下要给脚本一份 **渲染过的** 完整正文,而不是带字面 `**` 的原文。
+        let text = "**重点** 说明\n第二行";
+        assert_eq!(one_shot_tail(text, true), None, "TTY 下不得重复输出正文");
+
+        let piped = one_shot_tail(text, false).expect("非 TTY 应产出一份收尾正文");
+        assert!(
+            piped.contains(&theme::BOLD.to_string()),
+            "收尾正文应经 markdown 渲染: {piped:?}"
+        );
+        assert!(!piped.contains("**"), "不应残留字面星号: {piped:?}");
+        assert!(piped.ends_with('\n'), "应补上结尾换行: {piped:?}");
     }
 }
