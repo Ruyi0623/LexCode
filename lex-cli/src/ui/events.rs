@@ -251,8 +251,44 @@ mod tests {
         }));
         assert!(ok.as_deref().unwrap_or_default().contains("[子2]"), "ToolResult: {ok:?}");
 
+        // Started 的 task 只取首行且截断到 80 字符:多行/超长任务不得把整段灌进单行活动行
+        let long_first: String = "长".repeat(200);
+        let multiline = format!("{long_first}\n第二行不应出现");
+        let truncated = render_child_event(&ev(2, ChildEventKind::Started { task: multiline }));
+        let truncated = truncated.as_deref().unwrap_or_default();
+        assert_eq!(
+            truncated.matches('长').count(),
+            80,
+            "Started 的首行部分必须恰好截断到 80 字符: {truncated:?}"
+        );
+        assert!(!truncated.contains("第二行不应出现"), "Started 只应取首行: {truncated:?}");
+
+        // 子级错误行用 ERROR 色,成功行不得误用 ERROR 色
+        let failed = render_child_event(&ev(2, ChildEventKind::ToolResult {
+            name: "file_read".into(), first_line: "打不开".into(), is_error: true,
+        }));
+        let failed = failed.as_deref().unwrap_or_default();
+        assert!(failed.contains(theme::ERROR), "子级错误结果行必须用 ERROR 色: {failed:?}");
+        assert!(!ok.as_deref().unwrap_or_default().contains(theme::ERROR), "成功的结果行不得含 ERROR 色: {ok:?}");
+
         assert!(render_child_event(&ev(2, ChildEventKind::Finished { summary_first_line: "done".into() })).is_none(),
             "Finished 不应输出");
+    }
+
+    #[test]
+    fn child_event_clears_thinking_hint() {
+        // 这是**渲染器自身的一致性契约**,不是「修复了交互模式看不见 Started 行」:
+        // 当前装配下 thinking_hint 与 child_event 落在两个不同的 Renderer 实例上,
+        // 故 child_event 所在实例的 hint_visible 恒为 false、这次擦除今日是 no-op。
+        // 它防的是 TUI 把两个渲染器合流后的状态错乱:占位行不擦就会与子活动行挤在同一行。
+        let mut r = Renderer::new();
+        r.thinking_hint();
+        assert!(r.hint_visible, "前置:hint 应处于可见状态");
+        r.child_event(&ev(1, ChildEventKind::Started { task: "排查".into() }));
+        assert!(!r.hint_visible, "输出整行前必须擦除思考占位行,否则会留下「半行 hint + 子行挤在一行」");
+        // Finished 不输出整行,故不产生新的错乱状态(此处仅确认路径不 panic)
+        r.child_event(&ev(1, ChildEventKind::Finished { summary_first_line: "done".into() }));
+        assert!(!r.hint_visible);
     }
 
     #[test]

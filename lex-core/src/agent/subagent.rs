@@ -92,6 +92,10 @@ impl SpawnState {
     /// 尝试占用一个派生名额。超上限时不占位(回滚)并返回 false。
     /// 用「先加后判、越限回滚」而非 CAS 循环:并发的两次调用各自的 new 都已包含对方,
     /// 故不会双双越限;回滚保证被拒的派生不消耗配额。
+    ///
+    /// **只对越限回滚;准入后子 agent 自身失败不回滚** —— 口径是「获准占名额的派生数」
+    /// (与 spec §4.4 一致):名额在准入那一刻就被消耗,子 loop 随后失败与否不影响计数,
+    /// 否则一次失败的子 agent 就能无限次重试并绕过上限。
     fn try_admit(&self, max_children_per_turn: u32) -> bool {
         let admitted = self.spawned_this_turn.fetch_add(1, Ordering::SeqCst) + 1;
         if admitted > max_children_per_turn {
@@ -117,6 +121,11 @@ pub struct SubagentRuntime {
     depth: u32,
     /// 整棵派生树共享;新树由 `new` 创建,嵌套时 clone 下去
     spawn_state: SpawnState,
+    /// `#[cfg(test)]` 只读观测口:记录本 runtime 实际下传给孙级的 `SpawnLimits`
+    /// (生产的 `spawn` 路径写它,孙级从不由测试直接构造,故测试可从这里断言
+    /// 「孙级拿到的是 effective_limit 而非根的配置上限」)。生产构建下该字段不存在。
+    #[cfg(test)]
+    last_nested_limits: Arc<Mutex<Option<SpawnLimits>>>,
 }
 
 impl SubagentRuntime {
@@ -149,7 +158,40 @@ impl SubagentRuntime {
         spawn_state: SpawnState,
         depth: u32,
     ) -> Self {
-        SubagentRuntime { provider, base_system, handler, rules, cwd, shell, base_registry, limits, hooks, depth, spawn_state }
+        SubagentRuntime {
+            provider,
+            base_system,
+            handler,
+            rules,
+            cwd,
+            shell,
+            base_registry,
+            limits,
+            hooks,
+            depth,
+            spawn_state,
+            #[cfg(test)]
+            last_nested_limits: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+/// 只读观测口:仅供测试断言 runtime 实际持有的限额 / 实际下传给孙级的限额
+/// (生产路径不读它,故以 `cfg(test)` 收窄可见性)。
+#[cfg(test)]
+impl SubagentRuntime {
+    fn limits_for_test(&self) -> SpawnLimits {
+        self.limits
+    }
+
+    /// 本 runtime 上一次 `spawn` 下传给孙级派生器的限额;从未嵌套派生过则为 None。
+    fn last_nested_limits_for_test(&self) -> Option<SpawnLimits> {
+        *self.last_nested_limits.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// 测试专用注入:记录本次下传给孙级的限额(生产 `spawn` 内联写同一字段)。
+    fn record_nested_limits_for_test(&self, limits: SpawnLimits) {
+        *self.last_nested_limits.lock().unwrap_or_else(|p| p.into_inner()) = Some(limits);
     }
 }
 
@@ -187,6 +229,13 @@ impl SubagentSpawner for SubagentRuntime {
         // 子 agent 的有效上限只算一次:孙级派生器与子 AgentLoop 共用同一个值,
         // 否则孙级继承的是根的配置上限、而非其父级请求的预算(模型给的值被跳过)。
         let effective_limit = effective_context_limit(req.context_budget, self.limits.context_limit);
+        let nested_limits = SpawnLimits {
+            max_turns: self.limits.max_turns,
+            context_limit: effective_limit,
+            max_children_per_turn: self.limits.max_children_per_turn,
+        };
+        #[cfg(test)]
+        self.record_nested_limits_for_test(nested_limits);
         let nested_spawner: Option<Arc<dyn SubagentSpawner>> = if nested_spawner_allowed(self.depth, req.allow_nested) {
             Some(Arc::new(SubagentRuntime::with_depth(
                 self.provider.clone(),
@@ -196,11 +245,7 @@ impl SubagentSpawner for SubagentRuntime {
                 self.cwd.clone(),
                 self.shell.clone(),
                 self.base_registry.clone(),
-                SpawnLimits {
-                    max_turns: self.limits.max_turns,
-                    context_limit: effective_limit,
-                    max_children_per_turn: self.limits.max_children_per_turn,
-                },
+                nested_limits,
                 // 钩子原样下传:孙级的活动同样要能上报给渲染器(自带 depth=2 与自己的 child_id)
                 SubagentHooks { on_child_event: self.hooks.on_child_event.clone() },
                 self.spawn_state.clone(),
@@ -361,15 +406,24 @@ mod tests {
     #[derive(Clone, Default)]
     struct ScriptedProvider {
         scripts: Arc<Mutex<VecDeque<Vec<ProviderEvent>>>>,
+        /// 下一次 `send` 应返回的错误(为空则按脚本返回流)——用于构造"子 agent 首轮即失败"
+        errors: Arc<Mutex<VecDeque<crate::error::LexError>>>,
     }
     impl ScriptedProvider {
         fn push(&self, events: Vec<ProviderEvent>) {
             self.scripts.lock().unwrap_or_else(|p| p.into_inner()).push_back(events);
         }
+        /// 让第 n 次 `send` 返回错误(先于脚本队列消费)
+        fn push_error(&self, e: crate::error::LexError) {
+            self.errors.lock().unwrap_or_else(|p| p.into_inner()).push_back(e);
+        }
     }
     #[async_trait::async_trait]
     impl Provider for ScriptedProvider {
         async fn send(&self, _ctx: RequestContext) -> Result<StreamResult> {
+            if let Some(e) = self.errors.lock().unwrap_or_else(|p| p.into_inner()).pop_front() {
+                return Err(e);
+            }
             let script = self
                 .scripts
                 .lock()
@@ -567,11 +621,16 @@ mod tests {
         let err = rt.spawn(req()).await.unwrap_err();
         assert!(err.to_string().contains("已达上限"), "实际: {err}");
         assert_eq!(state.spawned(), 1, "被拒的那次必须回滚,不占配额");
+
+        // 拒绝文案必须同时锚定「真实上限值」与「配置项名」——否则模型撞墙时不知道该改哪个配置
+        // (max_children_per_turn 已刻意设为 1,不等于默认 4,故断言不会因巧合成立)
+        let msg = err.to_string();
+        assert!(msg.contains("已达上限 1("), "文案应含真实上限值: {msg}");
+        assert!(msg.contains("[agent] max_children_per_turn"), "文案应含配置项名: {msg}");
     }
 
     #[tokio::test]
-    async fn child_begin_turn_does_not_clear_parent_counter() {
-        // 设计中最易写错处:子 runtime 与父级共享同一个 SpawnState。
+    async fn child_begin_turn_does_not_clear_parent_counter() {        // 设计中最易写错处:子 runtime 与父级共享同一个 SpawnState。
         // 若 begin_turn 不按 depth 设闸,子 agent 每跑一轮都会清空父级的当轮计数,
         // 护栏表面还在、实际已被架空。
         let provider = ScriptedProvider::default();
@@ -589,6 +648,60 @@ mod tests {
 
         parent.begin_turn(); // 根开始新一轮 → 清零
         assert_eq!(state.spawned(), 0, "只有 depth==0 才清零");
+    }
+
+    // —— 以下为派生护栏加固用例:真并发不越限 / 准入后失败不回滚 / 孙级归属与预算 ——
+
+    /// 真并发派生不得越限(spec §9 明文要求)。
+    /// **必须**用 multi_thread flavor:`current_thread` 下 `join_all` 只是轮询,拿不到真并发的窗口,
+    /// 断言会退化为空洞的串行用例。故这里刻意把节流上限(4)设得大于派生上限(2),
+    /// 让被放行的子 agent 真的阻塞在 provider 上,把并发窗口撑开到足以让越限调用发生。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_spawns_do_not_exceed_per_turn_limit() {
+        let provider = ScriptedProvider::default();
+        for i in 0..4 {
+            provider.push(text_reply(&format!("## 子任务摘要\n- **做了什么**:第 {i} 个")));
+        }
+        let state = SpawnState::default();
+        let rt = runtime_with_limits(&provider, 0, limits(10, Some(64_000), 2), state.clone(), 4);
+
+        let results = futures::future::join_all((0..4).map(|_| rt.spawn(file_read_req("并发")))).await;
+        let ok = results.iter().filter(|r| r.is_ok()).count();
+        let rejected: Vec<String> = results
+            .iter()
+            .filter_map(|r| r.as_ref().err().map(ToString::to_string))
+            .collect();
+        assert_eq!(ok, 2, "真并发下放行的派生数必须恰好等于上限 2,实际 {ok}(拒绝: {rejected:?})");
+        assert_eq!(state.spawned(), 2, "计数器必须停在 2:被拒的两次不得占位,也不得因并发泄漏配额");
+        assert_eq!(rejected.len(), 2, "越限的两次必须全部被拒:{rejected:?}");
+        // 守卫确实在拒绝(而不是"恰好两个脚本被消费光"这类巧合)
+        assert!(rejected.iter().all(|m| m.contains("已达上限")), "拒绝原因应为越限:{rejected:?}");
+    }
+
+    /// 准入之后子 agent 自身失败**不**回滚名额(spec §4.4 口径:获准占名额的派生数)。
+    /// 只有「越限被拒」才回滚 —— 否则一次失败的子 agent 就能无限重试绕过上限。
+    #[tokio::test]
+    async fn admitted_child_failure_does_not_roll_back_slot() {
+        // 子 agent 首轮 provider 调用即失败 → 失败发生在 try_admit 之后
+        let provider = ScriptedProvider::default();
+        provider.push_error(LexError::Provider("子 agent 首轮即网络失败".into()));
+        let state = SpawnState::default();
+        let rt = runtime_with_limits(&provider, 0, limits(2, Some(64_000), 4), state.clone(), 3);
+
+        let err = rt.spawn(file_read_req("必失败")).await.unwrap_err();
+        assert!(
+            err.to_string().contains("子 agent 首轮即网络失败"),
+            "失败应来自子 agent 内部(而非准入阶段),实际: {err}"
+        );
+        assert_eq!(state.spawned(), 1, "准入后子 agent 自身失败不回滚名额:口径是获准占名额的派生数");
+        // 对照:名额确实已被这次失败的派生吃掉 —— 上限再调成 1,下一次派生必须因越限被拒
+        let rt1 = runtime_with_limits(&provider, 1, limits(2, Some(64_000), 1), state.clone(), 3);
+        let err2 = rt1.spawn(file_read_req("第二次")).await.unwrap_err();
+        assert!(
+            err2.to_string().contains("已达上限"),
+            "失败的派生已占掉名额,故第二次应因越限被拒(若失败回滚了名额则这里会放行),实际: {err2}"
+        );
+        assert_eq!(state.spawned(), 1, "被拒的那次必须回滚,计数器仍为 1");
     }
 
     // —— 以下为结构化子事件测试:归属信息(child_id/depth)+ 只转发工具活动 ——
@@ -643,6 +756,35 @@ mod tests {
         )
     }
 
+    /// 显式指定限额与共享派生状态的 runtime(并发上限 / 上下文预算类用例用)。
+    /// 注册表与 `spawn_returns_child_summary_only` 同构:file_read + spawn_subagent,
+    /// 便于用例在需要时真的向下再派生一层。
+    fn runtime_with_limits(
+        provider: &ScriptedProvider,
+        depth: u32,
+        limits: SpawnLimits,
+        state: SpawnState,
+        max_concurrent: usize,
+    ) -> SubagentRuntime {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(crate::tools::file_read::FileRead));
+        registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent::new(limits.max_children_per_turn)));
+        let throttled = crate::provider::throttle::ThrottledProvider::new(Arc::new(provider.clone()), max_concurrent);
+        SubagentRuntime::with_depth(
+            throttled,
+            "主提示词前缀".into(),
+            Arc::new(AllowHandler),
+            crate::security::SecurityRules::defaults(),
+            std::path::PathBuf::from("."),
+            None,
+            Arc::new(registry),
+            limits,
+            crate::agent::SubagentHooks { on_child_event: None },
+            state,
+            depth,
+        )
+    }
+
     /// 构造一份"只授权 file_read、不嵌套"的子任务请求
     fn file_read_req(task: &str) -> Req {
         Req {
@@ -652,6 +794,11 @@ mod tests {
             context_budget: None,
             allow_nested: false,
         }
+    }
+
+    /// 限额简写(减少构造样板)
+    fn limits(max_turns: u32, context_limit: Option<u32>, max_children_per_turn: u32) -> SpawnLimits {
+        SpawnLimits { max_turns, context_limit, max_children_per_turn }
     }
 
     #[tokio::test]
@@ -683,6 +830,14 @@ mod tests {
                 assert_eq!(input.get("path").and_then(Value::as_str), Some("Cargo.toml"));
             }
             other => panic!("第 2 个事件应是 ToolCall,实际: {other:?}"),
+        }
+        // Finished 的载荷必须是子 agent 最终摘要的**首行** —— 空串下游无从判断结局,
+        // 整段多行文本则会污染 TUI 的单行状态栏
+        match &events[3].kind {
+            ChildEventKind::Finished { summary_first_line } => {
+                assert_eq!(summary_first_line, "## 子任务摘要", "Finished 载荷应为最终摘要的首行");
+            }
+            other => panic!("第 4 个事件应是 Finished,实际: {other:?}"),
         }
     }
 
@@ -763,5 +918,129 @@ mod tests {
             }
             other => panic!("末条事件应是 Finished,实际: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn grandchild_events_carry_depth_two_and_own_id() {
+        // 孙级(depth=2)的活动必须一路下传到根级渲染器,且带自己的 child_id 与 depth。
+        // 若嵌套 `with_depth` 处把 hooks 改成 None(或丢下传),孙级事件会全部消失 → 本用例先红。
+        let provider = ScriptedProvider::default();
+        // 子 agent:派一个孙 agent(allow_nested = true;depth 1 派 depth 2 合法)
+        provider.push(vec![
+            ProviderEvent::ToolUseComplete {
+                id: "c1".into(),
+                name: "spawn_subagent".into(),
+                input: serde_json::json!({"task":"孙任务","allowed_tools":["file_read"],"allow_nested":true}),
+            },
+            completed(),
+        ]);
+        // 孙 agent:文本作答
+        provider.push(text_reply("## 子任务摘要\n- **做了什么**:孙任务完成"));
+        // 子 agent 收尾:汇总
+        provider.push(text_reply("## 子任务摘要\n- **做了什么**:委派孙任务完成"));
+
+        let log = Arc::new(EventLog::default());
+        // 注册表须含 spawn_subagent(depth 1 → 2 合法),否则子 agent 的派生调用只会降级为错误 ToolResult
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(crate::tools::file_read::FileRead));
+        registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent::new(4)));
+        let rt = SubagentRuntime::with_depth(
+            crate::provider::throttle::ThrottledProvider::new(Arc::new(provider.clone()), 3),
+            "主提示词前缀".into(),
+            Arc::new(AllowHandler),
+            crate::security::SecurityRules::defaults(),
+            std::path::PathBuf::from("."),
+            None,
+            Arc::new(registry),
+            limits(10, Some(64_000), 4),
+            crate::agent::SubagentHooks { on_child_event: Some(log.hook()) },
+            SpawnState::default(),
+            0,
+        );
+        rt.spawn(Req {
+            task: "子任务".into(),
+            allowed_tools: vec!["file_read".into()],
+            context: None,
+            context_budget: None,
+            allow_nested: true,
+        })
+        .await
+        .unwrap();
+
+        let events = log.events.lock().unwrap_or_else(|p| p.into_inner());
+        let by_depth = |d: u32| -> Vec<ChildEvent> { events.iter().filter(|e| e.depth == d).cloned().collect() };
+        let child_events = by_depth(1);
+        let grandchild_events = by_depth(2);
+        assert!(!child_events.is_empty(), "子级事件必须上报,实际事件: {events:?}");
+        assert!(
+            !grandchild_events.is_empty(),
+            "孙级事件必须下传上报(hooks 不得在嵌套处被丢弃),实际事件: {events:?}"
+        );
+
+        let ids_of = |evs: &[ChildEvent]| -> std::collections::BTreeSet<u32> { evs.iter().map(|e| e.child_id).collect() };
+        let child_ids = ids_of(&child_events);
+        let grandchild_ids = ids_of(&grandchild_events);
+        assert_eq!(child_ids.len(), 1, "本用例只有一个子 agent,实际: {child_ids:?}");
+        assert_eq!(grandchild_ids.len(), 1, "本用例只有一个孙 agent,实际: {grandchild_ids:?}");
+        assert_ne!(
+            child_ids, grandchild_ids,
+            "孙级的 child_id 必须与子 agent 不同,否则渲染层无法归属"
+        );
+        assert!(
+            grandchild_ids.iter().all(|id| !child_ids.contains(id)),
+            "孙级 id({grandchild_ids:?})不得与子级 id({child_ids:?})重合"
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_runtime_uses_effective_context_limit() {
+        // 孙级 runtime 的 context_limit 必须是「模型请求预算经父级夹取」的 effective_limit,
+        // 而不是根的配置上限 —— 否则模型给的 context_budget 在嵌套时被静默跳过。
+        // 断言读的是 spawn 实际下传的那份 SpawnLimits,故把该处改回
+        // `self.limits.context_limit` 时本用例必红(context_limit 会变成 64_000)。
+        let provider = ScriptedProvider::default();
+        // 子 agent:请求 8_000 预算并派一个孙 agent(allow_nested = true)
+        provider.push(vec![
+            ProviderEvent::ToolUseComplete {
+                id: "c1".into(),
+                name: "spawn_subagent".into(),
+                input: serde_json::json!({
+                    "task":"孙任务","allowed_tools":["file_read"],
+                    "context_budget":8_000,"allow_nested":true
+                }),
+            },
+            completed(),
+        ]);
+        provider.push(text_reply("## 子任务摘要\n- **做了什么**:孙任务完成"));
+        provider.push(text_reply("## 子任务摘要\n- **做了什么**:委派完成"));
+
+        let state = SpawnState::default();
+        let rt = runtime_with_limits(&provider, 0, limits(10, Some(64_000), 4), state.clone(), 3);
+        rt.spawn(Req {
+            task: "子任务".into(),
+            allowed_tools: vec!["file_read".into()],
+            context: None,
+            context_budget: Some(8_000),
+            allow_nested: true,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            state.spawned(),
+            2,
+            "子级与孙级各占一个名额:计数口径是整棵派生树在根一轮内的总数,孙级不清零父级计数"
+        );
+
+        // 对照:根 runtime 自身仍是配置上限 64_000,证明夹取确实发生在嵌套下传处
+        assert_eq!(rt.limits_for_test().context_limit, Some(64_000));
+        let nested = rt
+            .last_nested_limits_for_test()
+            .expect("allow_nested=true 时 spawn 必须下传一份嵌套 SpawnLimits");
+        assert_eq!(
+            nested.context_limit,
+            Some(8_000),
+            "孙级 runtime 必须继承 effective_limit(模型请求的 8_000),而非根的配置上限 64_000"
+        );
+        assert_eq!(nested.max_children_per_turn, 4, "上限值也应原样下传");
     }
 }
