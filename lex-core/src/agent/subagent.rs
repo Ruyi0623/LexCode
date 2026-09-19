@@ -266,9 +266,17 @@ impl SubagentSpawner for SubagentRuntime {
                 }
             }
         };
-        let final_text = child.run_turn(&child_task_text(&req), &mut on_event).await?;
-        emit(ChildEventKind::Finished { summary_first_line: crate::agent::first_line_of(&final_text) });
-        Ok(final_text)
+        let result = child.run_turn(&child_task_text(&req), &mut on_event).await;
+        // 失败路径也必须收尾:spec §7 保留 Finished 的唯一理由就是让下游不必从别的信号推断
+        // 「子 agent 何时结束」。用 `?` 提前返回会让 Started 永远没有配对事件(审查 I1)。
+        emit(ChildEventKind::Finished {
+            summary_first_line: match &result {
+                Ok(t) => crate::agent::first_line_of(t),
+                Err(e) => crate::agent::first_line_of(&e.to_string()),
+            },
+        });
+        // 返回值语义与修复前逐字节一致:成功返回子 agent 最终文本,失败上抛同一个 Err
+        result
     }
 
     /// 新一轮开始:仅根 runtime(depth 0)清零当轮计数。
@@ -718,5 +726,42 @@ mod tests {
         assert_eq!(state.next_child_id(), 2);
         state.reset();
         assert_eq!(state.next_child_id(), 1, "每轮从 1 开始");
+    }
+
+    #[tokio::test]
+    async fn finished_is_emitted_even_when_child_fails() {
+        // 失败路径也必须收尾(spec §7 保留 Finished 的唯一理由):Started 若无配对 Finished,
+        // 事件流就是「不完整生命周期」,下游(TUI 的子 agent 面板)只能从别的信号推断子 agent 何时结束
+        // —— 已死亡的子 agent 会被永久显示为「进行中」。
+        // 构造:子 agent 每轮都发工具调用、永不收敛 → 触顶 max_turns(=10)→ run_turn 返回 Err。
+        // 若失败路径用 `?` 提前返回而跳过 emit(Finished),本用例末条断言必红。
+        let provider = ScriptedProvider::default();
+        for i in 0..10 {
+            provider.push(vec![
+                ProviderEvent::ToolUseComplete {
+                    id: format!("c{i}"),
+                    name: "file_read".into(),
+                    input: serde_json::json!({"path": "Cargo.toml"}),
+                },
+                completed(),
+            ]);
+        }
+        let log = Arc::new(EventLog::default());
+        let rt = runtime_with_hooks(&provider, SpawnState::default(), crate::agent::SubagentHooks { on_child_event: Some(log.hook()) });
+        let err = rt.spawn(file_read_req("不收敛")).await.unwrap_err();
+        assert!(err.to_string().contains("最大循环次数"), "子 agent 应以触顶 max_turns 失败,实际: {err}");
+
+        // 失败不是「不发事件」的理由:首条 started、末条 finished 必须配对出现
+        let kinds = log.kinds();
+        assert_eq!(kinds.first().map(String::as_str), Some("started"), "实际: {kinds:?}");
+        assert_eq!(kinds.last().map(String::as_str), Some("finished"), "失败路径的 Started 必须有配对 Finished;实际: {kinds:?}");
+        // 载荷用错误信息首行 —— 对 TUI 恰是最有用的信息(而不是空串)
+        let events = log.events.lock().unwrap_or_else(|p| p.into_inner());
+        match &events.last().expect("末条应为 Finished").kind {
+            ChildEventKind::Finished { summary_first_line } => {
+                assert!(summary_first_line.contains("最大循环次数"), "失败时的摘要首行应取错误信息,实际: {summary_first_line:?}");
+            }
+            other => panic!("末条事件应是 Finished,实际: {other:?}"),
+        }
     }
 }
