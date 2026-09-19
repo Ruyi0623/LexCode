@@ -16,7 +16,7 @@
 
 ```bash
 export PATH="$HOME/.cargo/bin:/d/mingw64/bin:$PATH"   # Git Bash 下通常需要
-cargo test --workspace        # 全部测试(当前 185 个)
+cargo test --workspace        # 全部测试(当前 187 个)
 cargo test -p lex-core        # 仅核心库
 cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-code.exe
 ```
@@ -76,7 +76,7 @@ max_children_per_turn = 4   # 每轮最多派生多少个子 agent;0 = 禁止派
 - ~~Phase 5:错误边界打磨、可观测性、配置文档~~(已完成:provider 客户端 connect_timeout 防无界阻塞;`execute_tool_call` 记录工具耗时/结果日志;日志级别 `LEX_LOG` > `RUST_LOG` > warn(仅 stderr,不污染渲染);根目录 `README.md` 覆盖配置全字段、环境变量、安全模型、日志事件表)。
 - ~~Phase 6 模块一:sub-agent 派生机制~~(已完成,计划 `docs/superpowers/plans/2026-09-13-phase6-subagent.md`)。要点:`ToolRegistry` 已改 Arc 存储并新增 `names`/`subset`;`Tool` trait 已加 `parallel_safe`(并发判定与只读语义解耦);`ThrottledProvider` 在 provider 层节流并发在途流(默认 3,许可持有至流结束);`spawn_subagent` 已进注册表,`build_loop` 已改为注入 handler/todos/spawner;跨层回归见 `lex-core/tests/subagent_e2e.rs`(主循环派发 + 只回摘要、Forbidden 规则在子 agent 内仍拦截)。
 - ~~派生预算 + 结构化子事件(Phase 6 模块一加固)~~(已完成,计划 `docs/superpowers/plans/2026-09-19-subagent-budget-and-child-events.md`)。要点:新增 `[agent] max_children_per_turn`(默认 4,0 = 禁止派生),计数口径为**整棵派生树在主循环一轮内获准占名额的派生数**(`SpawnState::try_admit` 先加后判、越限回滚,故被拒的不计入、获准后子 agent 自身失败仍计入,根级 `run_turn` 起始清零);上限写进 `spawn_subagent` 工具 description 与拒绝文案(模型据此合并任务);子 agent 的工具活动改走独立的 `ChildEvent` 通道(不再经父级 `on_tool_result`,故**不触碰父级的 token 尾注计数**),CLI 以 `⤷ [子N] 派生` / `● [子N] 工具` / `⎿ 结果` 带归属前缀渲染(缩进一级 + DIM 色,子级错误用 ERROR 色),子 agent 的结局由父级那条 `⎿`(摘要首行)体现;`Started` 与 `Finished` 成对发射(失败路径也发 `Finished`)。
-- **Phase 6 模块二(计划就绪,未开工)**:ratatui TUI,实施计划见 `docs/superpowers/plans/2026-09-13-phase6-tui.md`(逐任务 TDD)。该计划是**按模块一改造已完成**来写的(`build_loop` 注入 handler/todos 已合入),现在可以直接开工。注:该计划的测试基线写的是 111,实际已是 185。
+- **Phase 6 模块二(计划就绪,未开工)**:ratatui TUI,实施计划见 `docs/superpowers/plans/2026-09-13-phase6-tui.md`(逐任务 TDD)。该计划是**按模块一改造已完成**来写的(`build_loop` 注入 handler/todos 已合入),现在可以直接开工。注:该计划的测试基线写的是 111,实际已是 187。
 - `/settings` 设置页(已完成):规格 `docs/superpowers/specs/2026-09-16-settings-page-design.md`,计划 `docs/superpowers/plans/2026-09-16-settings-page.md`;后续按模块填充编辑能力(写回 lex-code.toml + 热生效)。
 
 不做:GUI/IDE 插件、服务化、CI/CD(任务书明确:若启动需独立任务书,不与 sub-agent/TUI 混批)。
