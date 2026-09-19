@@ -63,7 +63,7 @@ pub struct SubagentRequest {
     pub allowed_tools: Vec<String>,
     /// 父级传入的必要上下文片段(并入子 agent 首条任务消息)
     pub context: Option<String>,
-    /// 子 agent 上下文 token 上限(缺省继承父级)
+    /// 子 agent 上下文 token 上限(缺省或 0 = 继承父级;由派生侧夹取到父级上限)
     pub context_budget: Option<u32>,
     /// 是否允许子 agent 再派生下一层(默认 false;深度硬上限见 agent/subagent.rs)
     pub allow_nested: bool,
@@ -195,6 +195,23 @@ mod tests {
         assert!(sub.get("dummy").is_none());
         // subset 与原注册表互不影响
         assert!(reg.get("dummy").is_some());
+    }
+
+    #[test]
+    fn subset_keeps_source_order_and_drops_unknown_names() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(Dummy));
+        reg.register(Box::new(FileRead));
+        // 允许表顺序与注册表相反:子注册表仍按**源注册表**的插入顺序排列(dummy → file_read)。
+        // 顺序影响进入请求 payload 的 tools 段字节序列,故必须由源注册表决定,不受模型给的列表顺序影响。
+        let sub = reg.subset(&["file_read".to_string(), "dummy".to_string()]);
+        assert_eq!(sub.names(), vec!["dummy".to_string(), "file_read".to_string()], "子注册表顺序须跟随源注册表插入顺序");
+        // 注册表里不存在的名字被静默丢弃(上游 agent/subagent.rs 已先拒绝未知工具,此处丢弃不构成放宽)
+        let sub = reg.subset(&["file_read".to_string(), "ghost".to_string()]);
+        assert_eq!(sub.names(), vec!["file_read".to_string()]);
+        // 空允许表 → 空注册表(不是全量)
+        let sub = reg.subset(&[]);
+        assert!(sub.names().is_empty(), "空允许表不得退化为「全量工具」");
     }
 
     #[test]

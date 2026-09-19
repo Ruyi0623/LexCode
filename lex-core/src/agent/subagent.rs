@@ -28,6 +28,18 @@ pub fn subagent_system_suffix(task: &str, allowed_tools: &[String]) -> String {
     )
 }
 
+/// 子 agent 的有效上下文上限。该值由模型经 `spawn_subagent` 的 `context_budget` 控制,
+/// 故必须校验,否则模型随手编的数字会静默改变子 agent 的压缩策略:
+/// - 缺失或 0 → 继承父级上限(0 不作「零上限」解,否则子 agent 首次机会即压缩);
+/// - 有值 → 按父级上限夹取(子 agent 不得获得比父级更大的上下文余量);
+///   父级无上限时原样透传。
+fn effective_context_limit(budget: Option<u32>, parent_limit: Option<u32>) -> Option<u32> {
+    match budget {
+        None | Some(0) => parent_limit,
+        Some(n) => Some(parent_limit.map_or(n, |p| n.min(p))),
+    }
+}
+
 /// 子 agent 首条任务消息 = 父级上下文片段 + 任务描述
 fn child_task_text(req: &SubagentRequest) -> String {
     match req.context.as_deref() {
@@ -65,11 +77,12 @@ impl SubagentRuntime {
         context_limit: Option<u32>,
         on_tool_result: Option<crate::agent::ToolResultHook>,
     ) -> Self {
-        Self::new_for_test(provider, base_system, handler, rules, cwd, shell, base_registry, max_turns, context_limit, on_tool_result, 0)
+        Self::with_depth(provider, base_system, handler, rules, cwd, shell, base_registry, max_turns, context_limit, on_tool_result, 0)
     }
 
+    /// 带派生深度的构造:主循环走 `new`(depth 0),嵌套派生器由此构造(depth + 1)。
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_for_test(
+    pub(crate) fn with_depth(
         provider: ThrottledProvider,
         base_system: String,
         handler: Arc<dyn PermissionHandler>,
@@ -108,8 +121,11 @@ impl SubagentSpawner for SubagentRuntime {
         if self.depth + 1 > MAX_SPAWN_DEPTH {
             return Err(LexError::Tool(format!("已达派生深度硬上限 {} 层,禁止继续派生", MAX_SPAWN_DEPTH)));
         }
+        // 子 agent 的有效上限只算一次:孙级派生器与子 AgentLoop 共用同一个值,
+        // 否则孙级继承的是根的配置上限、而非其父级请求的预算(模型给的值被跳过)。
+        let effective_limit = effective_context_limit(req.context_budget, self.context_limit);
         let nested_spawner: Option<Arc<dyn SubagentSpawner>> = if nested_spawner_allowed(self.depth, req.allow_nested) {
-            Some(Arc::new(SubagentRuntime::new_for_test(
+            Some(Arc::new(SubagentRuntime::with_depth(
                 self.provider.clone(),
                 self.base_system.clone(),
                 self.handler.clone(),
@@ -118,7 +134,7 @@ impl SubagentSpawner for SubagentRuntime {
                 self.shell.clone(),
                 self.base_registry.clone(),
                 self.max_turns,
-                self.context_limit,
+                effective_limit,
                 self.on_tool_result.clone(),
                 self.depth + 1,
             )))
@@ -142,7 +158,7 @@ impl SubagentSpawner for SubagentRuntime {
             history: vec![],
             max_turns: self.max_turns,
             cache_strategy: None,
-            context_limit: req.context_budget.or(self.context_limit),
+            context_limit: effective_limit,
             pending_summary: None,
             compress_attempted: false,
             on_tool_result: self.on_tool_result.clone(),
@@ -204,6 +220,22 @@ mod tests {
         assert_eq!(child_task_text(&req2), "排查失败");
     }
 
+    #[test]
+    fn context_budget_is_normalized_and_clamped_to_parent() {
+        // 父级无上限:模型给的值原样透传,缺失仍为 None
+        assert_eq!(effective_context_limit(Some(16_000), None), Some(16_000));
+        assert_eq!(effective_context_limit(None, None), None);
+        // 模型传 0 = 未指定(继承父级),绝不解成「零上限」——否则子 agent 首次机会即压缩
+        assert_eq!(effective_context_limit(Some(0), Some(64_000)), Some(64_000));
+        assert_eq!(effective_context_limit(Some(0), None), None);
+        // 缺失 = 继承父级上限
+        assert_eq!(effective_context_limit(None, Some(64_000)), Some(64_000));
+        // 超过父级上限 → 夹到父级(子 agent 不得比父级余量更大)
+        assert_eq!(effective_context_limit(Some(999_999), Some(64_000)), Some(64_000));
+        // 低于父级上限 → 尊重模型给的值
+        assert_eq!(effective_context_limit(Some(8_000), Some(64_000)), Some(8_000));
+    }
+
     // —— 以下为 spawn 行为测试:脚本化 Provider,验证权限/深度/过滤不被任务描述绕过 ——
 
     #[derive(Clone, Default)]
@@ -241,7 +273,7 @@ mod tests {
         registry: std::sync::Arc<ToolRegistry>,
     ) -> SubagentRuntime {
         let throttled = crate::provider::throttle::ThrottledProvider::new(Arc::new(provider.clone()), 3);
-        SubagentRuntime::new_for_test(
+        SubagentRuntime::with_depth(
             throttled,
             "主提示词前缀".into(),
             Arc::new(AllowHandler),

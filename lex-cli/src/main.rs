@@ -125,6 +125,8 @@ fn build_loop(
     // 隐式前缀缓存策略:两个 provider 通用(前缀一致性校验 + 命中率遥测)
     let cache_strategy: std::sync::Arc<dyn CacheStrategy> =
         std::sync::Arc::new(ImplicitPrefixCacheStrategy::new());
+    // 上下文压缩上限:主循环与其派生的子 agent 用同一个值(enabled=false 时不压缩)
+    let context_limit = cfg.context.enabled.then_some(cfg.context.limit);
 
     let rules = SecurityRules::build(&cfg.security)?;
     // depth=0 派生器:与主循环共享节流 provider / 注册表 / 权限配置,子 agent 权限不高于父级
@@ -138,7 +140,7 @@ fn build_loop(
             shell.clone(),
             registry.clone(),
             cfg.max_turns,
-            cfg.context.enabled.then_some(cfg.context.limit),
+            context_limit,
             on_tool_result.clone(),
         ),
     );
@@ -153,7 +155,7 @@ fn build_loop(
         history: vec![],
         max_turns: cfg.max_turns,
         cache_strategy: Some(cache_strategy),
-        context_limit: cfg.context.enabled.then_some(cfg.context.limit),
+        context_limit,
         pending_summary: None,
         compress_attempted: false,
         on_tool_result,
@@ -208,7 +210,7 @@ async fn run() -> Result<()> {
     let cfg = Config::load(&cwd)?;
     let input = std::sync::Arc::new(confirm::CliInput::new());
     let handler: std::sync::Arc<dyn lex_core::security::PermissionHandler> = input.clone();
-    // 待办清单提升到 run() 层:主循环与设置页/TUI 复用同一个 Arc
+    // 待办清单在 run() 层建好即交给 build_loop(run() 自身不再持有);TUI 模块为既定的后续复用方
     let todos: std::sync::Arc<std::sync::Mutex<Vec<lex_core::tools::Todo>>> = Default::default();
     let renderer = Arc::new(Mutex::new(ui::events::Renderer::new()));
     let mut agent = build_loop(&cfg, cwd.clone(), handler, todos, Some(make_result_hook(&renderer)))?;

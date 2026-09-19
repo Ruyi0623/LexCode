@@ -77,4 +77,36 @@ mod tests {
         }
         assert_eq!(probe.peak.load(Ordering::SeqCst), 2, "同时在途的流不得超过许可数");
     }
+
+    /// 立即返回的 provider:用于观察「许可是否被占用」而不引入额外延迟。
+    struct InstantProbe;
+    #[async_trait::async_trait]
+    impl Provider for InstantProbe {
+        async fn send(&self, _ctx: RequestContext) -> Result<StreamResult> {
+            Ok(futures::stream::iter(vec![Ok(ProviderEvent::Completed { usage: Usage::default() })]).boxed())
+        }
+    }
+
+    #[tokio::test]
+    async fn clones_share_one_semaphore() {
+        // 该类型的全部意义是「主循环与所有子 agent 共用一把信号量」,共享只来自 Clone
+        // (new 每次都会新建信号量),故必须钉住 clone 与原 provider 争的是同一把许可。
+        let throttled = ThrottledProvider::new(Arc::new(InstantProbe), 1);
+        let a = throttled.clone();
+        let b = throttled.clone();
+        // a 持有一条在途流 = 占住唯一许可(许可随流释放)
+        let held = a.send(RequestContext { system: String::new(), tools: vec![], messages: vec![] }).await.unwrap();
+        assert_eq!(throttled.permits.available_permits(), 0, "clone 与原 provider 须共用同一把信号量");
+        // 若 clone 各自持有独立信号量,b 立即就能拿到自己的许可并返回 —— 这里必须一直阻塞。
+        let blocked = tokio::time::timeout(std::time::Duration::from_millis(100), b.send(RequestContext { system: String::new(), tools: vec![], messages: vec![] })).await;
+        assert!(blocked.is_err(), "clone 不得绕过原 provider 占用的许可(独立信号量会让并发上限翻倍)");
+        // 释放后同一把许可可被 clone 继续获取(阻塞点正是该共享许可);
+        // 正路径给足宽限,避免机器负载高时把「调度慢」误判成「拿不到许可」
+        drop(held);
+        let mut stream = tokio::time::timeout(std::time::Duration::from_secs(2), b.send(RequestContext { system: String::new(), tools: vec![], messages: vec![] }))
+            .await
+            .expect("释放许可后 clone 应能继续")
+            .unwrap();
+        assert!(stream.next().await.is_some());
+    }
 }

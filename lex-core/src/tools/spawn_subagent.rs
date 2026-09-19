@@ -22,7 +22,7 @@ impl Tool for SpawnSubagent {
                 "task": {"type": "string", "description": "子任务描述,需自包含(子 agent 看不到主对话)"},
                 "allowed_tools": {"type": "array", "items": {"type": "string"}, "description": "允许子 agent 使用的工具名列表"},
                 "context": {"type": "string", "description": "子任务需要的必要上下文片段(可选)"},
-                "context_budget": {"type": "integer", "description": "子 agent 上下文 token 上限(可选,缺省继承父级)"},
+                "context_budget": {"type": "integer", "description": "子 agent 上下文 token 上限(可选;缺省或 0 表示继承父级,超过父级上限时按父级上限夹取)"},
                 "allow_nested": {"type": "boolean", "description": "是否允许子 agent 再派生下一层(默认 false,硬上限共 2 层)"}
             }
         })
@@ -47,6 +47,8 @@ impl Tool for SpawnSubagent {
             return Err(LexError::Tool("allowed_tools 不能为空:请列出子 agent 可用的工具名".into()));
         }
         let context = input.get("context").and_then(Value::as_str).map(str::to_string);
+        // 原样透传模型给的值(0 亦不在此处改写):归一化与「夹取到父级上限」在派生侧完成,
+        // 因为只有那里知道父级上限(`agent/subagent.rs::effective_context_limit`)。
         let context_budget = input.get("context_budget").and_then(Value::as_u64).map(|v| u32::try_from(v).unwrap_or(u32::MAX));
         let allow_nested = input.get("allow_nested").and_then(Value::as_bool).unwrap_or(false);
         spawner
@@ -96,6 +98,20 @@ mod tests {
         assert_eq!(reqs[0].context.as_deref(), Some("模块在 src/"));
         assert_eq!(reqs[0].context_budget, Some(16_000));
         assert!(reqs[0].allow_nested);
+    }
+
+    #[tokio::test]
+    async fn spawner_error_propagates() {
+        // 派生器返回 Err(如 allowed_tools 含未知工具 / 达深度上限)时,工具必须把该错误原样上抛,
+        // 而不是降级成空摘要或 Ok —— 否则主 agent 会把「派生失败」当成「子任务做完了」。
+        let rec = Arc::new(Recorder { err: Some("allowed_tools 含未知工具: ghost".into()), ..Default::default() });
+        let err = SpawnSubagent
+            .execute(json!({"task":"排查失败","allowed_tools":["file_read"]}), &ctx_with(rec.clone()))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("未知工具"), "派生器的错误须原样透出,实际: {err}");
+        // 请求确实已交到派生器(证明错误来自派生器而非前置校验)
+        assert_eq!(rec.requests.lock().unwrap_or_else(|p| p.into_inner()).len(), 1);
     }
 
     #[tokio::test]
