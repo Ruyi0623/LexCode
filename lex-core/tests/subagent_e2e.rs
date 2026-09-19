@@ -122,8 +122,7 @@ async fn main_loop_delegates_and_keeps_only_summary() {
         std::path::PathBuf::from("."),
         None,
         Arc::new(registry),
-        10,
-        Some(64_000),
+        lex_core::agent::subagent::SpawnLimits { max_turns: 10, context_limit: Some(64_000), max_children_per_turn: 4 },
         None,
     ));
 
@@ -205,8 +204,7 @@ async fn forbidden_rule_still_blocks_inside_child_agent() {
         std::path::PathBuf::from("."),
         None,
         Arc::new(registry),
-        10,
-        Some(64_000),
+        lex_core::agent::subagent::SpawnLimits { max_turns: 10, context_limit: Some(64_000), max_children_per_turn: 4 },
         Some(hook.clone()),
     ));
 

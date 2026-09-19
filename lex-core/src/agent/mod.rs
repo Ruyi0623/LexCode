@@ -74,6 +74,12 @@ impl AgentLoop {
         }
         // 当轮安全状态复位:敏感文件外发启发式以"同一轮"为判定窗口
         self.security.reset_turn();
+        // 通知派生器新一轮开始(重置其轮次级状态,如当轮子 agent 计数)。
+        // 子 agent 的 run_turn 也会走到这里,但其 runtime 的 depth > 0 → no-op,
+        // 否则子 agent 会中途清空父级的当轮计数,护栏被静默架空。
+        if let Some(spawner) = &self.tool_ctx.spawner {
+            spawner.begin_turn();
+        }
         let mut turns: u32 = 0;
 
         loop {

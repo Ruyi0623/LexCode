@@ -3,6 +3,7 @@ use crate::provider::throttle::ThrottledProvider;
 use crate::security::{PermissionHandler, SecurityGuard, SecurityRules};
 use crate::tools::{ShellCommand, SubagentRequest, SubagentSpawner, ToolContext, ToolRegistry};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// 派生层数硬上限:主循环为第 0 层,最多派生两层(子 = 1,孙 = 2)。
@@ -48,6 +49,49 @@ fn child_task_text(req: &SubagentRequest) -> String {
     }
 }
 
+/// 子 agent 的运行限额(集中传递,避免构造函数参数爆炸)
+#[derive(Debug, Clone, Copy)]
+pub struct SpawnLimits {
+    pub max_turns: u32,
+    pub context_limit: Option<u32>,
+    /// 每轮最多派生多少个子 agent;0 = 禁止派生
+    pub max_children_per_turn: u32,
+}
+
+/// 整棵派生树共享的轮次级状态。仅 depth == 0 的 runtime 在 `begin_turn` 时重置它,
+/// 故「每轮上限」的口径是**整棵树在根的一轮内**的派生总数,而非每个父级各自计数。
+#[derive(Clone, Default)]
+pub(crate) struct SpawnState {
+    spawned_this_turn: Arc<AtomicU32>,
+}
+
+impl SpawnState {
+    /// 本轮已派生的子 agent 数。
+    /// 仅测试直接读取该值(生产路径只经 `try_admit` 判定),故以 `cfg(test)` 收窄可见性,
+    /// 避免 lib 目标出现 `dead_code` 警告。
+    #[cfg(test)]
+    fn spawned(&self) -> u32 {
+        self.spawned_this_turn.load(Ordering::SeqCst)
+    }
+
+    /// 清零(新一轮开始;仅根 runtime 调用)
+    fn reset(&self) {
+        self.spawned_this_turn.store(0, Ordering::SeqCst);
+    }
+
+    /// 尝试占用一个派生名额。超上限时不占位(回滚)并返回 false。
+    /// 用「先加后判、越限回滚」而非 CAS 循环:并发的两次调用各自的 new 都已包含对方,
+    /// 故不会双双越限;回滚保证被拒的派生不消耗配额。
+    fn try_admit(&self, max_children_per_turn: u32) -> bool {
+        let admitted = self.spawned_this_turn.fetch_add(1, Ordering::SeqCst) + 1;
+        if admitted > max_children_per_turn {
+            self.spawned_this_turn.fetch_sub(1, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+}
+
 /// 子 agent 运行时:持有共享的节流 provider / 主 prompt 前缀 / 父级权限配置 / 基础注册表。
 pub struct SubagentRuntime {
     provider: ThrottledProvider,
@@ -57,14 +101,14 @@ pub struct SubagentRuntime {
     cwd: PathBuf,
     shell: Option<ShellCommand>,
     base_registry: Arc<ToolRegistry>,
-    max_turns: u32,
-    context_limit: Option<u32>,
+    limits: SpawnLimits,
     on_tool_result: Option<crate::agent::ToolResultHook>,
     depth: u32,
+    /// 整棵派生树共享;新树由 `new` 创建,嵌套时 clone 下去
+    spawn_state: SpawnState,
 }
 
 impl SubagentRuntime {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: ThrottledProvider,
         base_system: String,
@@ -73,14 +117,13 @@ impl SubagentRuntime {
         cwd: PathBuf,
         shell: Option<ShellCommand>,
         base_registry: Arc<ToolRegistry>,
-        max_turns: u32,
-        context_limit: Option<u32>,
+        limits: SpawnLimits,
         on_tool_result: Option<crate::agent::ToolResultHook>,
     ) -> Self {
-        Self::with_depth(provider, base_system, handler, rules, cwd, shell, base_registry, max_turns, context_limit, on_tool_result, 0)
+        Self::with_depth(provider, base_system, handler, rules, cwd, shell, base_registry, limits, on_tool_result, SpawnState::default(), 0)
     }
 
-    /// 带派生深度的构造:主循环走 `new`(depth 0),嵌套派生器由此构造(depth + 1)。
+    /// 带派生深度与共享轮次状态的构造:主循环走 `new`(depth 0),嵌套派生器由此构造(depth + 1)。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_depth(
         provider: ThrottledProvider,
@@ -90,12 +133,12 @@ impl SubagentRuntime {
         cwd: PathBuf,
         shell: Option<ShellCommand>,
         base_registry: Arc<ToolRegistry>,
-        max_turns: u32,
-        context_limit: Option<u32>,
+        limits: SpawnLimits,
         on_tool_result: Option<crate::agent::ToolResultHook>,
+        spawn_state: SpawnState,
         depth: u32,
     ) -> Self {
-        SubagentRuntime { provider, base_system, handler, rules, cwd, shell, base_registry, max_turns, context_limit, on_tool_result, depth }
+        SubagentRuntime { provider, base_system, handler, rules, cwd, shell, base_registry, limits, on_tool_result, depth, spawn_state }
     }
 }
 
@@ -121,9 +164,18 @@ impl SubagentSpawner for SubagentRuntime {
         if self.depth + 1 > MAX_SPAWN_DEPTH {
             return Err(LexError::Tool(format!("已达派生深度硬上限 {} 层,禁止继续派生", MAX_SPAWN_DEPTH)));
         }
+
+        // 3. 成本护栏:整棵派生树在根的一轮内共享计数,防止单轮扇出失控。
+        if !self.spawn_state.try_admit(self.limits.max_children_per_turn) {
+            return Err(LexError::Tool(format!(
+                "本轮派生子 agent 已达上限 {}(可在 lex-code.toml 的 [agent] max_children_per_turn 调整)",
+                self.limits.max_children_per_turn
+            )));
+        }
+
         // 子 agent 的有效上限只算一次:孙级派生器与子 AgentLoop 共用同一个值,
         // 否则孙级继承的是根的配置上限、而非其父级请求的预算(模型给的值被跳过)。
-        let effective_limit = effective_context_limit(req.context_budget, self.context_limit);
+        let effective_limit = effective_context_limit(req.context_budget, self.limits.context_limit);
         let nested_spawner: Option<Arc<dyn SubagentSpawner>> = if nested_spawner_allowed(self.depth, req.allow_nested) {
             Some(Arc::new(SubagentRuntime::with_depth(
                 self.provider.clone(),
@@ -133,9 +185,13 @@ impl SubagentSpawner for SubagentRuntime {
                 self.cwd.clone(),
                 self.shell.clone(),
                 self.base_registry.clone(),
-                self.max_turns,
-                effective_limit,
+                SpawnLimits {
+                    max_turns: self.limits.max_turns,
+                    context_limit: effective_limit,
+                    max_children_per_turn: self.limits.max_children_per_turn,
+                },
                 self.on_tool_result.clone(),
+                self.spawn_state.clone(),
                 self.depth + 1,
             )))
         } else {
@@ -147,7 +203,7 @@ impl SubagentSpawner for SubagentRuntime {
             child_registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent));
         }
 
-        // 3. 独立 AgentLoop:独立历史、独立 todos、独立 SecurityGuard(规则表与父级相同 = 权限不高于父级)
+        // 4. 独立 AgentLoop:独立历史、独立 todos、独立 SecurityGuard(规则表与父级相同 = 权限不高于父级)
         let mut child = crate::agent::AgentLoop {
             provider: Box::new(self.provider.clone()),
             registry: child_registry,
@@ -156,7 +212,7 @@ impl SubagentSpawner for SubagentRuntime {
             security: SecurityGuard::new(self.rules.clone()),
             system: compose_subagent_system(&self.base_system, &subagent_system_suffix(&req.task, &allowed)),
             history: vec![],
-            max_turns: self.max_turns,
+            max_turns: self.limits.max_turns,
             cache_strategy: None,
             context_limit: effective_limit,
             pending_summary: None,
@@ -164,9 +220,18 @@ impl SubagentSpawner for SubagentRuntime {
             on_tool_result: self.on_tool_result.clone(),
         };
 
-        // 4. 运行子任务,只把最终摘要(结构化文本)交回父级
+        // 5. 运行子任务,只把最终摘要(结构化文本)交回父级
         let final_text = child.run_turn(&child_task_text(&req), &mut |_e| {}).await?;
         Ok(final_text)
+    }
+
+    /// 新一轮开始:仅根 runtime(depth 0)清零当轮计数。
+    /// 子 runtime 与父级共享同一个计数器,不设闸的话子 agent 每跑一轮都会清空
+    /// 父级的当轮计数,护栏就被静默架空了 —— 这是本设计最易写错处。
+    fn begin_turn(&self) {
+        if self.depth == 0 {
+            self.spawn_state.reset();
+        }
     }
 }
 
@@ -267,10 +332,12 @@ mod tests {
         vec![ProviderEvent::TextDelta(s.to_string()), completed()]
     }
 
-    fn runtime_at_depth(
+    fn runtime_with(
         provider: &ScriptedProvider,
         depth: u32,
         registry: std::sync::Arc<ToolRegistry>,
+        state: SpawnState,
+        max_children_per_turn: u32,
     ) -> SubagentRuntime {
         let throttled = crate::provider::throttle::ThrottledProvider::new(Arc::new(provider.clone()), 3);
         SubagentRuntime::with_depth(
@@ -281,11 +348,19 @@ mod tests {
             std::path::PathBuf::from("."),
             None,
             registry,
-            10,
-            Some(64_000),
+            SpawnLimits { max_turns: 10, context_limit: Some(64_000), max_children_per_turn },
             None,
+            state,
             depth,
         )
+    }
+
+    fn runtime_at_depth(
+        provider: &ScriptedProvider,
+        depth: u32,
+        registry: std::sync::Arc<ToolRegistry>,
+    ) -> SubagentRuntime {
+        runtime_with(provider, depth, registry, SpawnState::default(), 4)
     }
 
     struct AllowHandler;
@@ -384,5 +459,80 @@ mod tests {
         // 结构性证明:子(1)派生孙(2)时不再授予派生能力
         assert!(!nested_spawner_allowed(1, true));
         assert!(nested_spawner_allowed(0, true));
+    }
+
+    // —— 以下为成本护栏测试:整棵派生树共享当轮计数,仅根 runtime 重置 ——
+
+    #[test]
+    fn try_admit_enforces_limit_without_leaking_slots() {
+        let st = SpawnState::default();
+        assert!(st.try_admit(2));
+        assert!(st.try_admit(2));
+        assert!(!st.try_admit(2), "第三次应被拒");
+        assert_eq!(st.spawned(), 2, "被拒的派生不得占位(必须回滚)");
+        st.reset();
+        assert_eq!(st.spawned(), 0);
+        assert!(st.try_admit(2), "重置后应重新可派生");
+    }
+
+    #[test]
+    fn zero_limit_forbids_every_spawn() {
+        let st = SpawnState::default();
+        assert!(!st.try_admit(0));
+        assert_eq!(st.spawned(), 0, "被拒的派生不占位");
+    }
+
+    #[test]
+    fn clones_share_one_counter() {
+        let a = SpawnState::default();
+        let b = a.clone();
+        assert!(a.try_admit(1));
+        assert!(!b.try_admit(1), "clone 必须共享同一计数器,而非各持一份——否则每层各有一个上限");
+    }
+
+    #[tokio::test]
+    async fn spawn_is_rejected_past_per_turn_limit() {
+        let provider = ScriptedProvider::default();
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(crate::tools::file_read::FileRead));
+        let registry = Arc::new(registry);
+        provider.push(text_reply("## 子任务摘要\n- **做了什么**:一"));
+        provider.push(text_reply("## 子任务摘要\n- **做了什么**:二"));
+
+        let state = SpawnState::default();
+        let rt = runtime_with(&provider, 0, registry, state.clone(), 1);
+        let req = || Req {
+            task: "t".into(),
+            allowed_tools: vec!["file_read".into()],
+            context: None,
+            context_budget: None,
+            allow_nested: false,
+        };
+        assert!(rt.spawn(req()).await.is_ok(), "第 1 次应放行");
+        let err = rt.spawn(req()).await.unwrap_err();
+        assert!(err.to_string().contains("已达上限"), "实际: {err}");
+        assert_eq!(state.spawned(), 1, "被拒的那次必须回滚,不占配额");
+    }
+
+    #[tokio::test]
+    async fn child_begin_turn_does_not_clear_parent_counter() {
+        // 设计中最易写错处:子 runtime 与父级共享同一个 SpawnState。
+        // 若 begin_turn 不按 depth 设闸,子 agent 每跑一轮都会清空父级的当轮计数,
+        // 护栏表面还在、实际已被架空。
+        let provider = ScriptedProvider::default();
+        let registry = Arc::new(ToolRegistry::new());
+        let state = SpawnState::default();
+
+        let parent = runtime_with(&provider, 0, registry.clone(), state.clone(), 4);
+        let child = runtime_with(&provider, 1, registry, state.clone(), 4);
+
+        assert!(state.try_admit(4));
+        assert_eq!(state.spawned(), 1);
+
+        child.begin_turn(); // 子 agent 开始一轮 → 不得触碰父级计数
+        assert_eq!(state.spawned(), 1, "子 runtime 的 begin_turn 必须 no-op");
+
+        parent.begin_turn(); // 根开始新一轮 → 清零
+        assert_eq!(state.spawned(), 0, "只有 depth==0 才清零");
     }
 }

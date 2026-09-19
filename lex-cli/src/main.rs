@@ -139,8 +139,11 @@ fn build_loop(
             cwd.clone(),
             shell.clone(),
             registry.clone(),
-            cfg.max_turns,
-            context_limit,
+            lex_core::agent::subagent::SpawnLimits {
+                max_turns: cfg.max_turns,
+                context_limit,
+                max_children_per_turn: cfg.agent.max_children_per_turn,
+            },
             on_tool_result.clone(),
         ),
     );

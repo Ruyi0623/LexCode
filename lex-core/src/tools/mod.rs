@@ -74,6 +74,9 @@ pub struct SubagentRequest {
 pub trait SubagentSpawner: Send + Sync {
     /// 执行子任务,返回子 agent 的结构化摘要(绝不返回子 agent 的完整消息历史)。
     async fn spawn(&self, req: SubagentRequest) -> crate::error::Result<String>;
+
+    /// 新一轮开始的信号。实现方按需重置轮次级状态;默认无操作。
+    fn begin_turn(&self) {}
 }
 
 #[derive(Clone, Default)]

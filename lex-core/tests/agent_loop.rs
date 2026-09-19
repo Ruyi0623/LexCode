@@ -7,7 +7,7 @@ use lex_core::security::{PermissionHandler, SecurityGuard, SecurityRules};
 use lex_core::tools::{Tool, ToolContext, ToolRegistry};
 use serde_json::json;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// 按脚本回放的 MockProvider:每次 send 消费一条脚本(事件序列,末尾自动补 Completed)。
 struct MockProvider {
@@ -287,4 +287,51 @@ async fn forbidden_command_is_hard_blocked_without_confirm() {
         }
         o => panic!("{o:?}"),
     }
+}
+
+// ---------- 轮次生命周期钩子 ----------
+
+struct BeginTurnProbe {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+#[async_trait]
+impl lex_core::tools::SubagentSpawner for BeginTurnProbe {
+    async fn spawn(&self, _req: lex_core::tools::SubagentRequest) -> Result<String> {
+        unreachable!("本测试不派生")
+    }
+    fn begin_turn(&self) {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn run_turn_signals_spawner_begin_turn() {
+    let mock = MockProvider::new(vec![vec![ProviderEvent::TextDelta("好".into())]]);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut loop_ = AgentLoop {
+        provider: Box::new(mock),
+        registry: ToolRegistry::new(),
+        handler: Box::new(AllowAll),
+        tool_ctx: ToolContext {
+            cwd: PathBuf::from("."),
+            shell: None,
+            todos: Default::default(),
+            spawner: Some(Arc::new(BeginTurnProbe { calls: calls.clone() })),
+        },
+        security: SecurityGuard::new(SecurityRules::defaults()),
+        system: "sys".into(),
+        history: vec![],
+        max_turns: 5,
+        cache_strategy: None,
+        context_limit: None,
+        pending_summary: None,
+        compress_attempted: false,
+        on_tool_result: None,
+    };
+    loop_.run_turn("任务", &mut |_| {}).await.unwrap();
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "run_turn 必须调用 begin_turn —— 否则轮次级状态永不重置,每轮上限会退化成会话上限"
+    );
 }
