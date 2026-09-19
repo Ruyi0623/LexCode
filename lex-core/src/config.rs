@@ -12,6 +12,7 @@ pub struct Config {
     pub shell: ShellConfig,
     pub security: SecurityConfig,
     pub context: ContextConfig,
+    pub agent: AgentConfig,
     pub max_turns: u32,
 }
 
@@ -72,6 +73,21 @@ impl Default for ContextConfig {
     }
 }
 
+/// `[agent]` 子 agent 派生控制。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// 每轮最多派生多少个子 agent;0 = 禁止派生。
+    /// 成本护栏:ThrottledProvider 只限**并发**在途流,不限总量,故需要一个总量上界。
+    pub max_children_per_turn: u32,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        AgentConfig { max_children_per_turn: 4 }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -82,6 +98,7 @@ impl Default for Config {
             shell: ShellConfig::default(),
             security: SecurityConfig::default(),
             context: ContextConfig::default(),
+            agent: AgentConfig::default(),
             max_turns: 50,
         }
     }
@@ -355,5 +372,31 @@ mod tests {
     fn api_key_env_per_provider() {
         assert_eq!(Config::api_key_env("anthropic"), "LEX_ANTHROPIC_API_KEY");
         assert_eq!(Config::api_key_env("openai"), "LEX_OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn agent_section_defaults_to_four_and_parses_zero() {
+        // 缺省 → 4
+        let d = temp_dir("agent-default");
+        fs::write(d.join("lex-code.toml"), "[anthropic]\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"m\"\n").unwrap();
+        assert_eq!(Config::load(&d).unwrap().agent.max_children_per_turn, 4);
+
+        // 显式 0(禁止派生)必须能与「缺省」区分开 —— 二者语义不同
+        let d0 = temp_dir("agent-zero");
+        fs::write(
+            d0.join("lex-code.toml"),
+            "[anthropic]\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"m\"\n[agent]\nmax_children_per_turn = 0\n",
+        )
+        .unwrap();
+        assert_eq!(Config::load(&d0).unwrap().agent.max_children_per_turn, 0);
+
+        // 显式值
+        let d12 = temp_dir("agent-explicit");
+        fs::write(
+            d12.join("lex-code.toml"),
+            "[anthropic]\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"m\"\n[agent]\nmax_children_per_turn = 12\n",
+        )
+        .unwrap();
+        assert_eq!(Config::load(&d12).unwrap().agent.max_children_per_turn, 12);
     }
 }

@@ -77,6 +77,7 @@ lex-code -C D:/my/project 梳理项目结构     # 指定工作目录
 | `[shell].command` / `args` | 平台默认 | 覆盖 bash_exec 外壳。默认 Windows `cmd /C`,Unix `/bin/sh -c`;Windows 上可设 `command="bash", args=["-lc"]` 切 Git Bash |
 | `[context].limit` | `64000` | 上下文 token 估算上限(本地按字符÷4 估算),超过 `limit × 0.8` 触发一次历史压缩 |
 | `[context].enabled` | `true` | `false` 关闭上下文压缩 |
+| `[agent].max_children_per_turn` | `4` | 每轮最多派生多少个子 agent;`0` 表示禁止派生 |
 | `[security].forbidden` / `confirm` / `auto` | 内置默认 | 三级权限正则规则表(见下节),用户配置只能**追加** |
 
 环境变量覆盖(优先于 TOML):`LEX_ANTHROPIC_BASE_URL`、`LEX_OPENAI_BASE_URL`。
