@@ -182,7 +182,7 @@ set LEX_OPENAI_API_KEY=<你的 DeepSeek Key>         (CMD)
 
 - 终端出现确认项(`⚠ 需要确认 [spawn_subagent]` + `派生子 agent 执行子任务: …` + `允许执行? [y/N]`)——子 agent 的权限等级与父级相同,**用的是同一个确认处理器**。
 - 子任务结束后,该工具的活动行下方出现 `⎿` 结果行(`ui/events.rs` 只打印结果**首行**,故这里就是子 agent 摘要的 `## 子任务摘要` 一行)。
-- 子 agent 的活动在终端**只有 `⎿` 结果行,没有 `●` 活动行**:`SubagentRuntime` 只把父级的 `on_tool_result` 回调一并传给了子 AgentLoop,子 agent 读/搜了什么由回调照常打印成 `⎿`;但子 agent 的流式事件 sink 被丢弃(子 `run_turn` 传的是空闭包),而 `● 工具(摘要)` 行只在父级收到 `ToolUseComplete` 流式事件时才由 `ui/events.rs` 打印。因此终端上会看到若干条**上方没有 `●` 上下文**的 `⎿` 结果行——这是当前预期行为,不是缺陷;把子 agent 的工具事件转发给渲染器需要给 `SubagentRuntime` 加事件 sink 并改 CLI 接线,已随 TUI 模块一并推迟。
+- 子 agent 的活动以 `[子N]` **归属前缀**呈现在终端(`N` 为同一轮内派生的序号):`⤷ [子N] 派生: …` 派生行、`● [子N] name(摘要)` 调用行、`⎿` 配对的结果行;整行缩进一级并用 DIM 色,子级错误结果用 ERROR 色。子级的结局由父级那条 `⎿`(摘要首行)体现,故子事件**不单独打印结束行**。子 agent 的活动**不再**触碰父级的 token 尾注计数(子级工具结果走独立的子事件通道而不再经父级 `on_tool_result`),这正是改道的动机之一。
 - 但子 agent 的中间过程**不进主上下文**:主历史里只有一条 `spawn_subagent` 的 tool_result,内容就是摘要;子 agent 自己的消息历史留在它的 AgentLoop 里,不回流。这正是派生的意义——看得见进度,但不吃主上下文的 token。
 - 最终回复含"做了什么 / 关键结论 / 修改的文件"三段结构。
 - **子 agent 不产生缓存遥测**:`LEX_LOG=info` 下只有主循环的前缀缓存命中率日志,子 agent 那几轮没有命中率输出。这是设计决定而非缺陷——子 agent 的注册表是父级注册表的 `subset(allowed_tools)`,tools 段必然与父级不同,逐字节前缀比对在 system 段之后即告失效,汇报一个注定未命中的命中率没有意义。子 agent 仍把主 prompt 原文作为 system 逐字节前缀(`compose_subagent_system`),这是为了「主 prompt 段」在服务端侧仍可命中,与本地遥测是两回事。

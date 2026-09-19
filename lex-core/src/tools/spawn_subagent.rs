@@ -4,7 +4,24 @@ use serde_json::{json, Value};
 
 /// spawn_subagent:把独立、边界清晰的子任务派发给独立上下文的子 agent。
 /// 返回值只有子 agent 的结构化摘要,不带回子 agent 的完整消息历史(控制主上下文体积的关键)。
-pub struct SpawnSubagent;
+///
+/// 每轮派生数量有上限(来自 `[agent] max_children_per_turn`,0 表示禁止派生),
+/// 该上限写进 description 供模型自知,避免反复撞墙。
+pub struct SpawnSubagent {
+    description: String,
+}
+
+impl SpawnSubagent {
+    pub fn new(max_children_per_turn: u32) -> Self {
+        SpawnSubagent {
+            description: format!(
+                "把一个独立、边界清晰的多步骤子任务派发给拥有独立上下文的子 agent 执行,只返回结构化摘要。\
+                 每轮(同一轮对话内)最多派生 {max_children_per_turn} 个子 agent,超出会被拒绝——请优先把相近的排查合并成一个子任务。\
+                 仅当子任务的执行长度/探索成本明显高于污染主上下文的代价时使用;琐碎单步操作不要派生。"
+            ),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl Tool for SpawnSubagent {
@@ -12,7 +29,7 @@ impl Tool for SpawnSubagent {
         "spawn_subagent"
     }
     fn description(&self) -> &str {
-        "把一个独立、边界清晰的多步骤子任务派发给拥有独立上下文的子 agent 执行,只返回结构化摘要。仅当子任务的执行长度/探索成本明显高于污染主上下文的代价时使用;琐碎单步操作不要派生。"
+        &self.description
     }
     fn schema(&self) -> Value {
         json!({
@@ -87,7 +104,7 @@ mod tests {
     #[tokio::test]
     async fn parses_input_and_returns_summary() {
         let rec = Arc::new(Recorder { reply: "## 子任务摘要\n- **做了什么**:x".into(), ..Default::default() });
-        let out = SpawnSubagent.execute(
+        let out = SpawnSubagent::new(4).execute(
             json!({"task":"排查失败","allowed_tools":["file_read"],"context":"模块在 src/","context_budget":16000,"allow_nested":true}),
             &ctx_with(rec.clone()),
         ).await.unwrap();
@@ -105,7 +122,7 @@ mod tests {
         // 派生器返回 Err(如 allowed_tools 含未知工具 / 达深度上限)时,工具必须把该错误原样上抛,
         // 而不是降级成空摘要或 Ok —— 否则主 agent 会把「派生失败」当成「子任务做完了」。
         let rec = Arc::new(Recorder { err: Some("allowed_tools 含未知工具: ghost".into()), ..Default::default() });
-        let err = SpawnSubagent
+        let err = SpawnSubagent::new(4)
             .execute(json!({"task":"排查失败","allowed_tools":["file_read"]}), &ctx_with(rec.clone()))
             .await
             .unwrap_err();
@@ -117,21 +134,43 @@ mod tests {
     #[tokio::test]
     async fn missing_spawner_is_error() {
         let ctx = ToolContext { cwd: std::path::PathBuf::from("."), shell: None, todos: Default::default(), spawner: None };
-        let err = SpawnSubagent.execute(json!({"task":"t","allowed_tools":["file_read"]}), &ctx).await.unwrap_err();
+        let err = SpawnSubagent::new(4).execute(json!({"task":"t","allowed_tools":["file_read"]}), &ctx).await.unwrap_err();
         assert!(err.to_string().contains("不允许派生"), "实际: {err}");
     }
 
     #[tokio::test]
     async fn empty_allowed_tools_is_error() {
         let rec = Arc::new(Recorder::default());
-        let err = SpawnSubagent.execute(json!({"task":"t","allowed_tools":[]}), &ctx_with(rec)).await.unwrap_err();
+        let err = SpawnSubagent::new(4).execute(json!({"task":"t","allowed_tools":[]}), &ctx_with(rec)).await.unwrap_err();
         assert!(err.to_string().contains("allowed_tools"), "实际: {err}");
     }
 
     #[test]
+    fn description_states_the_configured_per_turn_cap() {
+        // 模型需要知道上限,否则会反复撞墙而不自知。
+        // 写进工具 description —— 模型挑工具时读的就是它。
+        let d7 = SpawnSubagent::new(7).description().to_string();
+        assert!(d7.contains('7'), "描述应含配置的上限值: {d7}");
+        assert!(d7.contains("每轮"), "应说明是按轮的: {d7}");
+
+        // 上限为 0(禁止派生)时也要如实告知
+        let d0 = SpawnSubagent::new(0).description().to_string();
+        assert!(d0.contains('0'), "描述应如实反映 0: {d0}");
+    }
+
+    #[test]
+    fn tool_metadata_unchanged_by_construction() {
+        let t = SpawnSubagent::new(4);
+        assert_eq!(t.name(), "spawn_subagent");
+        assert!(!t.read_only());
+        assert!(t.parallel_safe());
+    }
+
+    #[test]
     fn tool_metadata() {
-        assert_eq!(SpawnSubagent.name(), "spawn_subagent");
-        assert!(!SpawnSubagent.read_only());
-        assert!(SpawnSubagent.parallel_safe());
+        let t = SpawnSubagent::new(4);
+        assert_eq!(t.name(), "spawn_subagent");
+        assert!(!t.read_only());
+        assert!(t.parallel_safe());
     }
 }

@@ -104,6 +104,7 @@ auto = ["cargo\\s+(fmt|clippy)"]       # 只读判定外,额外放行的命令�
 
 - **权限等级继承父级**:子 agent 使用与父级**同一份规则表 + 同一个确认处理器**,不允许通过任务描述或 `allowed_tools` 配置降级;子 agent 的工具调用走同一条 `execute_tool_call` 路径,父级 Forbidden 规则在子 agent 内同样硬拦截(回归见 `lex-core/tests/subagent_e2e.rs`)。
 - **派生深度硬上限 2 层**:主循环为第 0 层,最多派生出子(1)与孙(2);`allow_nested` 只在未达上限时授予下一层派生器,孙代结构性拿不到 `spawn_subagent` 工具,无法越过上限。
+- **每轮派生数量上限**:整棵派生树在主循环一轮内最多派生 `[agent] max_children_per_turn` 个子 agent(默认 `4`,`0` 表示禁止派生),越限的派生被拒绝;该上限也写进 `spawn_subagent` 的工具说明,模型据此自行合并任务。
 
 ## 上下文管理与 DeepSeek 前缀缓存
 

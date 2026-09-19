@@ -212,7 +212,7 @@ impl SubagentSpawner for SubagentRuntime {
 
         let mut child_registry = self.base_registry.subset(&allowed);
         if nested_spawner.is_some() {
-            child_registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent));
+            child_registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent::new(self.limits.max_children_per_turn)));
         }
 
         // 子事件发射器:捕获物必须可 Clone(要分别送进结果钩子与流式过滤闭包,
@@ -431,7 +431,7 @@ mod tests {
         let provider = ScriptedProvider::default();
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(crate::tools::file_read::FileRead));
-        registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent));
+        registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent::new(4)));
         let registry = Arc::new(registry);
         // 子 agent 一轮:直接产出结构化摘要
         let child_reply = "## 子任务摘要\n- **做了什么**:读了文件\n- **关键结论**:原因 A\n- **修改的文件**:无";
@@ -471,7 +471,7 @@ mod tests {
         let provider = ScriptedProvider::default();
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(crate::tools::file_read::FileRead));
-        registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent));
+        registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent::new(4)));
         let registry = Arc::new(registry);
         let rt = runtime_at_depth(&provider, 0, registry);
         // 子脚本:子 agent 再派生孙 agent(allow_nested=true,depth 1 → 2 合法)

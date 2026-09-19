@@ -108,7 +108,7 @@ fn build_loop(
     registry.register(Box::new(BashExec));
     registry.register(Box::new(GrepSearch));
     registry.register(Box::new(TodoWrite));
-    registry.register(Box::new(lex_core::tools::spawn_subagent::SpawnSubagent));
+    registry.register(Box::new(lex_core::tools::spawn_subagent::SpawnSubagent::new(cfg.agent.max_children_per_turn)));
     let registry = std::sync::Arc::new(registry);
 
     let shell: Option<ShellCommand> = cfg.shell.command.clone().map(|command| ShellCommand {

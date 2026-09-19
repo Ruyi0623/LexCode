@@ -112,7 +112,7 @@ async fn main_loop_delegates_and_keeps_only_summary() {
     let throttled = ThrottledProvider::new(Arc::new(provider.clone()), 3);
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FileRead));
-    registry.register(Box::new(SpawnSubagent));
+    registry.register(Box::new(SpawnSubagent::new(4)));
     let todos: Arc<Mutex<Vec<Todo>>> = Default::default();
     let spawner: Arc<dyn SubagentSpawner> = Arc::new(lex_core::agent::subagent::SubagentRuntime::new(
         throttled.clone(),
@@ -128,7 +128,7 @@ async fn main_loop_delegates_and_keeps_only_summary() {
 
     let mut loop_registry = ToolRegistry::new();
     loop_registry.register(Box::new(FileRead));
-    loop_registry.register(Box::new(SpawnSubagent));
+    loop_registry.register(Box::new(SpawnSubagent::new(4)));
     let mut agent = build_loop(throttled, loop_registry, SecurityRules::defaults(), spawner, todos, None);
 
     let final_text = agent.run_turn("排查测试失败原因", &mut |_| {}).await.unwrap();
@@ -197,7 +197,7 @@ async fn forbidden_rule_still_blocks_inside_child_agent() {
     let throttled = ThrottledProvider::new(Arc::new(provider.clone()), 3);
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(BashExec));
-    registry.register(Box::new(SpawnSubagent));
+    registry.register(Box::new(SpawnSubagent::new(4)));
     let todos: Arc<Mutex<Vec<Todo>>> = Default::default();
     let spawner: Arc<dyn SubagentSpawner> = Arc::new(lex_core::agent::subagent::SubagentRuntime::new(
         throttled.clone(),
@@ -226,7 +226,7 @@ async fn forbidden_rule_still_blocks_inside_child_agent() {
 
     let mut loop_registry = ToolRegistry::new();
     loop_registry.register(Box::new(BashExec));
-    loop_registry.register(Box::new(SpawnSubagent));
+    loop_registry.register(Box::new(SpawnSubagent::new(4)));
     // 本轮不再需要父级结果钩子:子级结果已走 on_child_event(父级自己的 ⎿ 通道与本事无关)
     let mut agent = build_loop(throttled, loop_registry, rules.clone(), spawner, todos, None);
 
