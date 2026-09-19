@@ -576,6 +576,10 @@ git commit -m "feat(agent): 子 agent 每轮派生上限(树内共享计数,仅�
         )
     }
 
+    // 本任务把 with_depth 的第 9 个形参由 on_tool_result 改为 hooks: SubagentHooks,
+    // 故 Task 2 引入的 runtime_with 也必须同步改传 SubagentHooks —— 否则编译不过。
+    // 把 runtime_with 里的 `None,`(第 9 实参)换成 `crate::agent::SubagentHooks { on_child_event: None },`
+
     #[tokio::test]
     async fn emits_started_tool_call_tool_result_and_finished() {
         let provider = ScriptedProvider::default();
