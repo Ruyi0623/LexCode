@@ -144,7 +144,8 @@ fn build_loop(
                 context_limit,
                 max_children_per_turn: cfg.agent.max_children_per_turn,
             },
-            on_tool_result.clone(),
+            // 子 agent 活动走子事件通道;T4 才把这枚钩子接到渲染器上
+            lex_core::agent::SubagentHooks { on_child_event: None },
         ),
     );
 

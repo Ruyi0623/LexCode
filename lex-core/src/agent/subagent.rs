@@ -1,3 +1,4 @@
+use crate::agent::{ChildEvent, ChildEventKind, SubagentHooks};
 use crate::error::{LexError, Result};
 use crate::provider::throttle::ThrottledProvider;
 use crate::security::{PermissionHandler, SecurityGuard, SecurityRules};
@@ -63,6 +64,8 @@ pub struct SpawnLimits {
 #[derive(Clone, Default)]
 pub(crate) struct SpawnState {
     spawned_this_turn: Arc<AtomicU32>,
+    /// 子 agent 标识分配器:与当轮计数同批重置,故每轮从「子1」重新开始
+    next_child_id: Arc<AtomicU32>,
 }
 
 impl SpawnState {
@@ -74,9 +77,16 @@ impl SpawnState {
         self.spawned_this_turn.load(Ordering::SeqCst)
     }
 
+    /// 分配一个子 agent 标识(树内自增;reset 后从 1 重新开始)——
+    /// 同一轮内并发派生的多个子 agent 得到不同 id,交错时仍可归属
+    fn next_child_id(&self) -> u32 {
+        self.next_child_id.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
     /// 清零(新一轮开始;仅根 runtime 调用)
     fn reset(&self) {
         self.spawned_this_turn.store(0, Ordering::SeqCst);
+        self.next_child_id.store(0, Ordering::SeqCst);
     }
 
     /// 尝试占用一个派生名额。超上限时不占位(回滚)并返回 false。
@@ -102,7 +112,8 @@ pub struct SubagentRuntime {
     shell: Option<ShellCommand>,
     base_registry: Arc<ToolRegistry>,
     limits: SpawnLimits,
-    on_tool_result: Option<crate::agent::ToolResultHook>,
+    /// 子 agent 回调集合;子级工具结果经 `on_child_event`(而非父级 `on_tool_result`)上报
+    hooks: SubagentHooks,
     depth: u32,
     /// 整棵派生树共享;新树由 `new` 创建,嵌套时 clone 下去
     spawn_state: SpawnState,
@@ -118,9 +129,9 @@ impl SubagentRuntime {
         shell: Option<ShellCommand>,
         base_registry: Arc<ToolRegistry>,
         limits: SpawnLimits,
-        on_tool_result: Option<crate::agent::ToolResultHook>,
+        hooks: SubagentHooks,
     ) -> Self {
-        Self::with_depth(provider, base_system, handler, rules, cwd, shell, base_registry, limits, on_tool_result, SpawnState::default(), 0)
+        Self::with_depth(provider, base_system, handler, rules, cwd, shell, base_registry, limits, hooks, SpawnState::default(), 0)
     }
 
     /// 带派生深度与共享轮次状态的构造:主循环走 `new`(depth 0),嵌套派生器由此构造(depth + 1)。
@@ -134,11 +145,11 @@ impl SubagentRuntime {
         shell: Option<ShellCommand>,
         base_registry: Arc<ToolRegistry>,
         limits: SpawnLimits,
-        on_tool_result: Option<crate::agent::ToolResultHook>,
+        hooks: SubagentHooks,
         spawn_state: SpawnState,
         depth: u32,
     ) -> Self {
-        SubagentRuntime { provider, base_system, handler, rules, cwd, shell, base_registry, limits, on_tool_result, depth, spawn_state }
+        SubagentRuntime { provider, base_system, handler, rules, cwd, shell, base_registry, limits, hooks, depth, spawn_state }
     }
 }
 
@@ -190,7 +201,8 @@ impl SubagentSpawner for SubagentRuntime {
                     context_limit: effective_limit,
                     max_children_per_turn: self.limits.max_children_per_turn,
                 },
-                self.on_tool_result.clone(),
+                // 钩子原样下传:孙级的活动同样要能上报给渲染器(自带 depth=2 与自己的 child_id)
+                SubagentHooks { on_child_event: self.hooks.on_child_event.clone() },
                 self.spawn_state.clone(),
                 self.depth + 1,
             )))
@@ -202,6 +214,17 @@ impl SubagentSpawner for SubagentRuntime {
         if nested_spawner.is_some() {
             child_registry.register(Box::new(crate::tools::spawn_subagent::SpawnSubagent));
         }
+
+        // 子事件发射器:捕获物必须可 Clone(要分别送进结果钩子与流式过滤闭包,
+        // 原件还要用于收尾的 Finished),故只捕获 u32 与 Arc
+        let child_id = self.spawn_state.next_child_id();
+        let child_depth = self.depth + 1;
+        let hook = self.hooks.on_child_event.clone();
+        let emit = move |kind: ChildEventKind| {
+            if let Some(h) = &hook {
+                h(&ChildEvent { child_id, depth: child_depth, kind });
+            }
+        };
 
         // 4. 独立 AgentLoop:独立历史、独立 todos、独立 SecurityGuard(规则表与父级相同 = 权限不高于父级)
         let mut child = crate::agent::AgentLoop {
@@ -217,11 +240,34 @@ impl SubagentSpawner for SubagentRuntime {
             context_limit: effective_limit,
             pending_summary: None,
             compress_attempted: false,
-            on_tool_result: self.on_tool_result.clone(),
+            // 子 agent 的工具结果改走子事件通道,不再经父级的 on_tool_result ——
+            // 既给结果行加上归属,又避免子级的 ⎿ 去减父级的 pending_tools 计数。
+            // 钩子为 None 时该字段也是 None,零开销。
+            on_tool_result: self.hooks.on_child_event.as_ref().map(|_| {
+                let emit = emit.clone();
+                Arc::new(move |info: &crate::agent::ToolResultInfo| {
+                    emit(ChildEventKind::ToolResult {
+                        name: info.tool_name.clone(),
+                        first_line: info.first_line.clone(),
+                        is_error: info.is_error,
+                    });
+                }) as crate::agent::ToolResultHook
+            }),
         };
 
         // 5. 运行子任务,只把最终摘要(结构化文本)交回父级
-        let final_text = child.run_turn(&child_task_text(&req), &mut |_e| {}).await?;
+        emit(ChildEventKind::Started { task: req.task.clone() });
+        // 只转发工具调用事件;子 agent 的正文/思考/用量一概不转(见 ChildEvent 文档)
+        let mut on_event = {
+            let emit = emit.clone();
+            move |e: &crate::provider::ProviderEvent| {
+                if let crate::provider::ProviderEvent::ToolUseComplete { name, input, .. } = e {
+                    emit(ChildEventKind::ToolCall { name: name.clone(), input: input.clone() });
+                }
+            }
+        };
+        let final_text = child.run_turn(&child_task_text(&req), &mut on_event).await?;
+        emit(ChildEventKind::Finished { summary_first_line: crate::agent::first_line_of(&final_text) });
         Ok(final_text)
     }
 
@@ -241,6 +287,7 @@ mod tests {
     use crate::provider::{Provider, ProviderEvent, RequestContext, StreamResult};
     use crate::tools::{SubagentRequest as Req, ToolRegistry};
     use futures::StreamExt;
+    use serde_json::Value;
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -349,7 +396,7 @@ mod tests {
             None,
             registry,
             SpawnLimits { max_turns: 10, context_limit: Some(64_000), max_children_per_turn },
-            None,
+            crate::agent::SubagentHooks { on_child_event: None },
             state,
             depth,
         )
@@ -534,5 +581,142 @@ mod tests {
 
         parent.begin_turn(); // 根开始新一轮 → 清零
         assert_eq!(state.spawned(), 0, "只有 depth==0 才清零");
+    }
+
+    // —— 以下为结构化子事件测试:归属信息(child_id/depth)+ 只转发工具活动 ——
+
+    /// 收集子事件用(测试夹具)
+    #[derive(Default)]
+    struct EventLog {
+        events: Mutex<Vec<ChildEvent>>,
+    }
+    impl EventLog {
+        fn hook(self: &Arc<Self>) -> crate::agent::ChildEventHook {
+            let me = Arc::clone(self);
+            Arc::new(move |ev: &ChildEvent| {
+                me.events.lock().unwrap_or_else(|p| p.into_inner()).push(ev.clone());
+            })
+        }
+        fn kinds(&self) -> Vec<String> {
+            self.events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .map(|e| match &e.kind {
+                    ChildEventKind::Started { .. } => "started".to_string(),
+                    ChildEventKind::ToolCall { .. } => "tool_call".to_string(),
+                    ChildEventKind::ToolResult { .. } => "tool_result".to_string(),
+                    ChildEventKind::Finished { .. } => "finished".to_string(),
+                })
+                .collect()
+        }
+    }
+
+    fn runtime_with_hooks(
+        provider: &ScriptedProvider,
+        state: SpawnState,
+        hooks: crate::agent::SubagentHooks,
+    ) -> SubagentRuntime {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(crate::tools::file_read::FileRead));
+        let throttled = crate::provider::throttle::ThrottledProvider::new(Arc::new(provider.clone()), 3);
+        SubagentRuntime::with_depth(
+            throttled,
+            "主提示词前缀".into(),
+            Arc::new(AllowHandler),
+            crate::security::SecurityRules::defaults(),
+            std::path::PathBuf::from("."),
+            None,
+            Arc::new(registry),
+            SpawnLimits { max_turns: 10, context_limit: Some(64_000), max_children_per_turn: 4 },
+            hooks,
+            state,
+            0,
+        )
+    }
+
+    /// 构造一份"只授权 file_read、不嵌套"的子任务请求
+    fn file_read_req(task: &str) -> Req {
+        Req {
+            task: task.into(),
+            allowed_tools: vec!["file_read".into()],
+            context: None,
+            context_budget: None,
+            allow_nested: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn emits_started_tool_call_tool_result_and_finished() {
+        let provider = ScriptedProvider::default();
+        // 子 agent:先调一次 file_read,再文本作答
+        provider.push(vec![
+            ProviderEvent::ToolUseComplete {
+                id: "c1".into(),
+                name: "file_read".into(),
+                input: serde_json::json!({"path": "Cargo.toml"}),
+            },
+            completed(),
+        ]);
+        provider.push(text_reply("## 子任务摘要\n- **做了什么**:读了文件"));
+
+        let log = Arc::new(EventLog::default());
+        let rt = runtime_with_hooks(&provider, SpawnState::default(), crate::agent::SubagentHooks { on_child_event: Some(log.hook()) });
+        rt.spawn(file_read_req("排查")).await.unwrap();
+
+        // Started → ToolCall → ToolResult → Finished,顺序完整
+        assert_eq!(log.kinds(), vec!["started", "tool_call", "tool_result", "finished"]);
+
+        let events = log.events.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(events.iter().all(|e| e.child_id == 1 && e.depth == 1), "归属信息应一致(child_id=1, depth=1)");
+        match &events[1].kind {
+            ChildEventKind::ToolCall { name, input } => {
+                assert_eq!(name, "file_read");
+                assert_eq!(input.get("path").and_then(Value::as_str), Some("Cargo.toml"));
+            }
+            other => panic!("第 2 个事件应是 ToolCall,实际: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn child_text_and_usage_are_not_forwarded() {
+        // 子 agent 的正文/思考/用量是它的内部过程,不得污染主输出。
+        // 脚本里塞入 TextDelta 与 Completed(带非零用量),断言钩子只收到工具类事件。
+        let provider = ScriptedProvider::default();
+        provider.push(vec![
+            ProviderEvent::ThinkingDelta("子 agent 的思考".into()),
+            ProviderEvent::TextDelta("子 agent 的正文".into()),
+            ProviderEvent::Completed { usage: crate::message::Usage { input_tokens: 999, output_tokens: 888, ..Default::default() } },
+        ]);
+        let log = Arc::new(EventLog::default());
+        let rt = runtime_with_hooks(&provider, SpawnState::default(), crate::agent::SubagentHooks { on_child_event: Some(log.hook()) });
+        rt.spawn(file_read_req("t")).await.unwrap();
+
+        assert_eq!(log.kinds(), vec!["started", "finished"], "只应有首尾两条,正文/思考/用量一律不转发");
+    }
+
+    #[tokio::test]
+    async fn concurrent_children_get_distinct_ids() {
+        let provider = ScriptedProvider::default();
+        provider.push(text_reply("## 子任务摘要\n- **做了什么**:一"));
+        provider.push(text_reply("## 子任务摘要\n- **做了什么**:二"));
+
+        let log = Arc::new(EventLog::default());
+        let rt = Arc::new(runtime_with_hooks(&provider, SpawnState::default(), crate::agent::SubagentHooks { on_child_event: Some(log.hook()) }));
+        let (a, b) = tokio::join!(rt.spawn(file_read_req("t")), rt.spawn(file_read_req("t")));
+        assert!(a.is_ok() && b.is_ok());
+
+        let ids: std::collections::BTreeSet<u32> =
+            log.events.lock().unwrap_or_else(|p| p.into_inner()).iter().map(|e| e.child_id).collect();
+        assert_eq!(ids.len(), 2, "同一轮内两个子 agent 的 child_id 必须不同,否则并发交错时无法归属");
+    }
+
+    #[test]
+    fn begin_turn_also_resets_child_ids() {
+        let state = SpawnState::default();
+        assert_eq!(state.next_child_id(), 1);
+        assert_eq!(state.next_child_id(), 2);
+        state.reset();
+        assert_eq!(state.next_child_id(), 1, "每轮从 1 开始");
     }
 }

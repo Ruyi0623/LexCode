@@ -27,6 +27,40 @@ pub struct ToolResultInfo {
 }
 pub type ToolResultHook = Arc<dyn Fn(&ToolResultInfo) + Send + Sync>;
 
+/// 子 agent 活动事件:承载归属信息 + 该子 agent 的关键动作。
+/// 只携带渲染所需的最小信息,**绝不携带子 agent 的完整消息历史**
+/// (正文/思考/用量都不在转发之列——它们是子 agent 的内部过程)。
+#[derive(Debug, Clone)]
+pub struct ChildEvent {
+    /// 树内自增标识,与轮次计数同批重置 → 每轮从 1 开始
+    pub child_id: u32,
+    /// 该子 agent 所处深度(子 = 1,孙 = 2)
+    pub depth: u32,
+    pub kind: ChildEventKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum ChildEventKind {
+    /// 子 agent 开始执行
+    Started { task: String },
+    /// 子 agent 发起一次工具调用(在其独立上下文内)
+    ToolCall { name: String, input: serde_json::Value },
+    /// 子 agent 的工具调用返回
+    ToolResult { name: String, first_line: String, is_error: bool },
+    /// 子 agent 结束(只带摘要首行)
+    Finished { summary_first_line: String },
+}
+
+pub type ChildEventHook = Arc<dyn Fn(&ChildEvent) + Send + Sync>;
+
+/// 子 agent 相关的回调集合。
+///
+/// 这里**没有** `on_tool_result`:父级自己的工具结果钩子直接交给 `AgentLoop`,
+/// 不经 `SubagentRuntime` 转手;子级的工具结果改走 `on_child_event`(见设计 6.3)。
+pub struct SubagentHooks {
+    pub on_child_event: Option<ChildEventHook>,
+}
+
 /// 取工具结果首行(截断 160 字符),供活动行展示
 pub fn first_line_of(content: &str) -> String {
     content.lines().next().unwrap_or_default().chars().take(160).collect()

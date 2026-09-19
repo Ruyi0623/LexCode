@@ -5,7 +5,7 @@
 //! 与 `agent::subagent` 内的单元测试互补:那里测子 agent 自身行为,这里测
 //! 「主循环真的能通过工具路径把子任务派出去、且只拿回摘要 / 权限不因派生而放宽」。
 use futures::StreamExt;
-use lex_core::agent::{AgentLoop, ToolResultHook};
+use lex_core::agent::{AgentLoop, ChildEvent, ChildEventHook, ChildEventKind, ToolResultHook};
 use lex_core::error::Result;
 use lex_core::message::{Block, Message};
 use lex_core::provider::throttle::ThrottledProvider;
@@ -123,7 +123,7 @@ async fn main_loop_delegates_and_keeps_only_summary() {
         None,
         Arc::new(registry),
         lex_core::agent::subagent::SpawnLimits { max_turns: 10, context_limit: Some(64_000), max_children_per_turn: 4 },
-        None,
+        lex_core::agent::SubagentHooks { on_child_event: None },
     ));
 
     let mut loop_registry = ToolRegistry::new();
@@ -182,12 +182,15 @@ async fn forbidden_rule_still_blocks_inside_child_agent() {
     );
 
     let hook_log: Arc<Mutex<Vec<(String, String, bool)>>> = Default::default();
-    let hook: ToolResultHook = {
+    // 子 agent 的工具结果自 T3 起走子事件通道(不再经父级 on_tool_result),故用 ChildEventHook 观测
+    let hook: ChildEventHook = {
         let log = hook_log.clone();
-        Arc::new(move |info: &lex_core::agent::ToolResultInfo| {
-            log.lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push((info.tool_name.clone(), info.first_line.clone(), info.is_error));
+        Arc::new(move |ev: &ChildEvent| {
+            if let ChildEventKind::ToolResult { name, first_line, is_error } = &ev.kind {
+                log.lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push((name.clone(), first_line.clone(), *is_error));
+            }
         })
     };
 
@@ -205,7 +208,7 @@ async fn forbidden_rule_still_blocks_inside_child_agent() {
         None,
         Arc::new(registry),
         lex_core::agent::subagent::SpawnLimits { max_turns: 10, context_limit: Some(64_000), max_children_per_turn: 4 },
-        Some(hook.clone()),
+        lex_core::agent::SubagentHooks { on_child_event: Some(hook.clone()) },
     ));
 
     // 父:派生一个只授权 bash_exec 的子 agent
@@ -224,7 +227,8 @@ async fn forbidden_rule_still_blocks_inside_child_agent() {
     let mut loop_registry = ToolRegistry::new();
     loop_registry.register(Box::new(BashExec));
     loop_registry.register(Box::new(SpawnSubagent));
-    let mut agent = build_loop(throttled, loop_registry, rules.clone(), spawner, todos, Some(hook));
+    // 本轮不再需要父级结果钩子:子级结果已走 on_child_event(父级自己的 ⎿ 通道与本事无关)
+    let mut agent = build_loop(throttled, loop_registry, rules.clone(), spawner, todos, None);
 
     let final_text = agent.run_turn("验证权限继承", &mut |_| {}).await.unwrap();
     assert!(final_text.contains("已回报"), "主循环应正常收尾,实际: {final_text}");
@@ -240,7 +244,8 @@ async fn forbidden_rule_still_blocks_inside_child_agent() {
     );
 
     // 证据二:子 agent 的 bash_exec 结果为 Forbidden 错误,而非命令输出。
-    // 子 agent 的 tool_result 不会回到主历史,故经 on_tool_result 回调(装配时与本运行时同一 hook)观测。
+    // 子 agent 的 tool_result 不会回到主历史,故经装配时下传给子运行时的 on_child_event
+    // 的 ToolResult 事件观测。
     let bash_results: Vec<(String, String, bool)> = hook_log
         .lock()
         .unwrap_or_else(|p| p.into_inner())
