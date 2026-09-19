@@ -25,13 +25,15 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 
 测试夹具若用固定临时目录(如 `lex-core/src/config.rs` 的 `tests::temp_dir(tag)` → `%TEMP%\lex-config-test-{tag}`,且先 `remove_dir_all`),**新测试必须用互不相同的 tag** —— 共用 tag 会在并行跑测试时互相删目录(本项目据此出过 flake)。
 
+**`cargo test` 不重建可执行产物**(它只建测试 harness):改动后要对二进制冒烟,必须先 `cargo build --release -p lex-cli`,否则跑的是**旧二进制**(本项目据此误跑过一次冒烟);debug 的 `lex-code.exe` 同理不随 `cargo test` 刷新。
+
 ## 环境坑点(重要)
 
 - **本文件会被自身产品加载**:lex-code 启动时把项目根 `AGENTS.md` 注入模型系统提示词(`context/agents_md.rs`)。改这里 = 改运行时模型行为;冒烟时模型会读它,措辞要当"给模型的指令"对待。
 - **本文件与 `CLAUDE.md` 必须逐字节相同**:两者是同源副本(`CLAUDE.md` 是 Claude Code 读的那份,`AGENTS.md` 是产品运行时注入的那份),由 `lex-core/tests/docs_consistency.rs` **强制**——只改一份会让 `cargo test` 直接失败。**改完 `AGENTS.md` 后把整份内容覆盖写入 `CLAUDE.md`**(不要手工在两份里各改一遍,行尾/空格差异即失败),可用 `Get-FileHash AGENTS.md, CLAUDE.md -Algorithm SHA256` 自证。
 - **仓库路径含中文**(`D:\项目\`),GNU dlltool 不兼容 → `.cargo/config.toml` 已把 target-dir 重定向到 `D:/lexcode-target`。**不要删除该配置**。
 - 运行时按以下顺序查找系统提示词:配置 `system_prompt_path` → `<cwd>/assets/` → `<exe目录>/assets/`。对 release 二进制冒烟时需把 `assets/coding-agent-system-prompt.md` 复制到 exe 旁。
-- 配置优先级:env(`LEX_*`)> 项目级 `lex-code.toml` > 内置默认。**Key 只从环境变量读**(`LEX_ANTHROPIC_API_KEY` / `LEX_OPENAI_API_KEY`),TOML 不放凭证;base_url/model 必须显式配置,代码零硬编码默认 URL/模型。本机已在用户级环境变量永久配置这两把 Key(同一把 DeepSeek Key,对 OpenAI 端点与 Anthropic 兼容端点通用),新终端可直接跑冒烟。
+- 配置优先级:env(`LEX_*`)> 项目级 `lex-code.toml` > 内置默认。**Key 只从环境变量读**(`LEX_ANTHROPIC_API_KEY` / `LEX_OPENAI_API_KEY`),TOML 不放凭证;base_url/model 必须显式配置,代码零硬编码默认 URL/模型。本机已在用户级环境变量永久配置这两把 Key(同一把 DeepSeek Key,对 OpenAI 端点与 Anthropic 兼容端点通用),新终端可直接跑冒烟。**注意环境变量只对"新起的进程"生效**:已在长驻的进程里(如 agent harness、旧 shell)看不到后配的 Key —— 冒烟若报"缺少 API Key",用 `$env:LEX_OPENAI_API_KEY = [Environment]::GetEnvironmentVariable('LEX_OPENAI_API_KEY','User')` 显式注入,**绝不打印其值**。
 
 ## 架构边界(依赖单向)
 
