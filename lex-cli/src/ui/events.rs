@@ -70,8 +70,19 @@ impl Renderer {
 
     /// 子 agent 活动行(由 ChildEventHook 回调驱动)。
     /// 有意**不触碰** `pending_tools`:子 agent 的 ●/⎿ 自成一套,父级的轮次尾注只由父级自己的工具决定。
+    ///
+    /// `erase_hint()` 是本渲染器自身的**一致性契约**:凡要往 stdout 打整行的出口都必须先擦掉
+    /// 「✻ 思考中…」占位行,否则会留下「半行 hint + 新行挤在同一行」的错乱状态(同 `render()`
+    /// 的 `ToolUseStart` 分支顺序:erase_hint → break_thinking → flush_markdown → 输出)。
+    ///
+    /// 定性说明(勿改写):当前装配下两个 `Renderer` 实例分离 —— `thinking_hint()` 只在
+    /// `main.rs` 交互模式那份实例上调用,而 `child_event` 经 `make_child_event_hook` 落在 `run()`
+    /// 层那份实例上,故本实例的 `hint_visible` **恒为 false**,这次补的 `erase_hint()` 今日是
+    /// no-op,**并非修复某个用户可见缺陷**。它消除的是渲染器内部的潜在一致性缺口,等 TUI 把
+    /// 两个渲染器合流后才会显形。
     pub fn child_event(&mut self, ev: &ChildEvent) {
         let Some(line) = render_child_event(ev) else { return };
+        self.erase_hint();
         self.break_thinking();
         self.flush_markdown();
         anstream::println!("{line}");

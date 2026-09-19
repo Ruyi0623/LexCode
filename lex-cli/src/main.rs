@@ -121,7 +121,7 @@ fn build_loop(
     let agents_md = load_agents_md(&cwd);
     let system = assemble_system_prompt(&base_system, agents_md.as_deref());
     if agents_md.is_some() {
-        anstream::println!("\x1b[2m已加载项目指引 AGENTS.md\x1b[0m");
+        anstream::println!("{}已加载项目指引 AGENTS.md{}", ui::theme::DIM, ui::theme::RESET);
     }
     // 隐式前缀缓存策略:两个 provider 通用(前缀一致性校验 + 命中率遥测)
     let cache_strategy: std::sync::Arc<dyn CacheStrategy> =
