@@ -16,7 +16,7 @@
 
 ```bash
 export PATH="$HOME/.cargo/bin:/d/mingw64/bin:$PATH"   # Git Bash 下通常需要
-cargo test --workspace        # 全部测试(当前 180 个)
+cargo test --workspace        # 全部测试(当前 185 个)
 cargo test -p lex-core        # 仅核心库
 cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-code.exe
 ```
@@ -60,7 +60,7 @@ cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-cod
 max_children_per_turn = 4   # 每轮最多派生多少个子 agent;0 = 禁止派生(不是"无限")
 ```
 
-- **口径是"整棵派生树在主循环一轮内的派生尝试总数"**,不是父子各自计数;根级 `run_turn` 起始清零,子 agent 的轮次**不清零**父级计数。
+- **口径是"整棵派生树在主循环一轮内获准占名额的派生数"**,不是父子各自计数,也不是"派生尝试数":`SpawnState::try_admit` 先加后判,**只有越限被拒的那次回滚不计入**;获准后子 agent 自身失败的那次**仍计入**(名额在准入那一刻即被消耗,否则失败的子 agent 可以无限重试绕过上限)。根级 `run_turn` 起始清零,子 agent 的轮次**不清零**父级计数。
 - 上限值与配置项名同时出现在拒绝文案里、并写进 `spawn_subagent` 的工具 description(模型据此自行合并任务,避免反复撞墙)。
 - 改上限时只改配置:上限从构造期传入 `SpawnSubagent::new(...)`,不要在代码里另留一份默认值。改 `description` 文案会变更请求 payload 的 tools 段,使 DeepSeek 前缀缓存**失效一次**。
 
@@ -71,8 +71,8 @@ max_children_per_turn = 4   # 每轮最多派生多少个子 agent;0 = 禁止派
 - ~~Phase 4:AGENTS.md、压缩触发、`ImplicitPrefixCacheStrategy`~~(已完成并通过 DeepSeek 端点真实冒烟,见 `examples/smoke/README.md` 第 9 节)。压缩要点:阈值 `context.limit × 0.8`、**会话内只成功触发一次**(无可切分历史/摘要失败不消耗机会)、摘要并入下一条 user 消息(保持角色交替,Anthropic 端点要求)、`[context]` 段 limit(默认 64000)/enabled 可配。
 - ~~Phase 5:错误边界打磨、可观测性、配置文档~~(已完成:provider 客户端 connect_timeout 防无界阻塞;`execute_tool_call` 记录工具耗时/结果日志;日志级别 `LEX_LOG` > `RUST_LOG` > warn(仅 stderr,不污染渲染);根目录 `README.md` 覆盖配置全字段、环境变量、安全模型、日志事件表)。
 - ~~Phase 6 模块一:sub-agent 派生机制~~(已完成,计划 `docs/superpowers/plans/2026-09-13-phase6-subagent.md`)。要点:`ToolRegistry` 已改 Arc 存储并新增 `names`/`subset`;`Tool` trait 已加 `parallel_safe`(并发判定与只读语义解耦);`ThrottledProvider` 在 provider 层节流并发在途流(默认 3,许可持有至流结束);`spawn_subagent` 已进注册表,`build_loop` 已改为注入 handler/todos/spawner;跨层回归见 `lex-core/tests/subagent_e2e.rs`(主循环派发 + 只回摘要、Forbidden 规则在子 agent 内仍拦截)。
-- ~~派生预算 + 结构化子事件(Phase 6 模块一加固)~~(已完成,计划 `docs/superpowers/plans/2026-09-19-subagent-budget-and-child-events.md`)。要点:新增 `[agent] max_children_per_turn`(默认 4,0 = 禁止派生),计数口径为**整棵派生树在主循环一轮内的派生尝试总数**(`SpawnState::try_admit` 先加后判、越限回滚,根级 `run_turn` 起始清零);上限写进 `spawn_subagent` 工具 description 与拒绝文案(模型据此合并任务);子 agent 的工具活动改走独立的 `ChildEvent` 通道(不再经父级 `on_tool_result`,故**不触碰父级的 token 尾注计数**),CLI 以 `⤷ [子N] 派生` / `● [子N] 工具` / `⎿ 结果` 带归属前缀渲染(缩进一级 + DIM 色,子级错误用 ERROR 色),子 agent 的结局由父级那条 `⎿`(摘要首行)体现;`Started` 与 `Finished` 成对发射(失败路径也发 `Finished`)。
-- **Phase 6 模块二(计划就绪,未开工)**:ratatui TUI,实施计划见 `docs/superpowers/plans/2026-09-13-phase6-tui.md`(逐任务 TDD)。该计划是**按模块一改造已完成**来写的(`build_loop` 注入 handler/todos 已合入),现在可以直接开工。注:该计划的测试基线写的是 111,实际已是 180。
+- ~~派生预算 + 结构化子事件(Phase 6 模块一加固)~~(已完成,计划 `docs/superpowers/plans/2026-09-19-subagent-budget-and-child-events.md`)。要点:新增 `[agent] max_children_per_turn`(默认 4,0 = 禁止派生),计数口径为**整棵派生树在主循环一轮内获准占名额的派生数**(`SpawnState::try_admit` 先加后判、越限回滚,故被拒的不计入、获准后子 agent 自身失败仍计入,根级 `run_turn` 起始清零);上限写进 `spawn_subagent` 工具 description 与拒绝文案(模型据此合并任务);子 agent 的工具活动改走独立的 `ChildEvent` 通道(不再经父级 `on_tool_result`,故**不触碰父级的 token 尾注计数**),CLI 以 `⤷ [子N] 派生` / `● [子N] 工具` / `⎿ 结果` 带归属前缀渲染(缩进一级 + DIM 色,子级错误用 ERROR 色),子 agent 的结局由父级那条 `⎿`(摘要首行)体现;`Started` 与 `Finished` 成对发射(失败路径也发 `Finished`)。
+- **Phase 6 模块二(计划就绪,未开工)**:ratatui TUI,实施计划见 `docs/superpowers/plans/2026-09-13-phase6-tui.md`(逐任务 TDD)。该计划是**按模块一改造已完成**来写的(`build_loop` 注入 handler/todos 已合入),现在可以直接开工。注:该计划的测试基线写的是 111,实际已是 185。
 - `/settings` 设置页(已完成):规格 `docs/superpowers/specs/2026-09-16-settings-page-design.md`,计划 `docs/superpowers/plans/2026-09-16-settings-page.md`;后续按模块填充编辑能力(写回 lex-code.toml + 热生效)。
 
 不做:GUI/IDE 插件、服务化、CI/CD(任务书明确:若启动需独立任务书,不与 sub-agent/TUI 混批)。
