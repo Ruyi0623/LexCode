@@ -42,3 +42,16 @@ pub fn bold(s: &str) -> String {
 pub fn goto_col(n: usize) -> String {
     format!("\x1b[{n}G")
 }
+
+// —— TUI(ratatui)色板:与上方 ANSI 主题同源的唯一定义处,TUI 渲染代码只允许从这里取色 ——
+use ratatui::style::Color;
+pub const C_ACCENT: Color = Color::Rgb(59, 130, 246); // 对应 ACCENT 蓝
+pub const C_ERROR: Color = Color::Red;
+pub const C_WARN: Color = Color::Yellow;
+pub const C_SUCCESS: Color = Color::Green;
+pub const C_DIM: Color = Color::DarkGray;
+pub const C_THINKING: Color = Color::Magenta;
+pub const C_DIFF_ADD: Color = Color::Green; // diff 增行
+pub const C_DIFF_DEL: Color = Color::Red; // diff 删行
+pub const C_BORDER: Color = Color::DarkGray;
+pub const C_BG_MODAL: Color = Color::Black; // 弹层底色,压住下层内容
