@@ -8,10 +8,34 @@ use crate::tools::{ToolContext, ToolRegistry};
 use async_trait::async_trait;
 use serde_json::Value;
 
+/// 结构化动作明细:TUI 权限弹层渲染 diff/命令原文用;纯文本模式只读 summary。
+#[derive(Debug, Clone, PartialEq)]
+pub enum PendingDetail {
+    Bash { command: String },
+    FileEdit { path: String, old_string: String, new_string: String },
+    Other,
+}
+
+/// 从工具调用输入提取结构化明细(bash 取命令原文,file_edit 取三段 diff 源)。
+pub fn detail_of(tool_name: &str, input: &Value) -> PendingDetail {
+    match tool_name {
+        "bash_exec" => PendingDetail::Bash {
+            command: input.get("command").and_then(Value::as_str).unwrap_or("").to_string(),
+        },
+        "file_edit" => PendingDetail::FileEdit {
+            path: input.get("path").and_then(Value::as_str).unwrap_or("").to_string(),
+            old_string: input.get("old_string").and_then(Value::as_str).unwrap_or("").to_string(),
+            new_string: input.get("new_string").and_then(Value::as_str).unwrap_or("").to_string(),
+        },
+        _ => PendingDetail::Other,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingAction {
     pub tool_name: String,
     pub summary: String,
+    pub detail: PendingDetail,
 }
 
 #[async_trait]
@@ -108,7 +132,11 @@ pub async fn execute_tool_call(
         }
         Decision::Auto => {}
         Decision::Confirm => {
-            let action = PendingAction { tool_name: tool_name.to_string(), summary: describe_call(tool_name, &input) };
+            let action = PendingAction {
+                tool_name: tool_name.to_string(),
+                summary: describe_call(tool_name, &input),
+                detail: detail_of(tool_name, &input),
+            };
             match handler.confirm(&action).await {
                 Ok(true) => {}
                 Ok(false) => {
@@ -156,6 +184,7 @@ mod tests {
     use rules::{SecurityGuard, SecurityRules};
     use serde_json::json;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     struct Always;
     #[async_trait::async_trait]
@@ -282,5 +311,44 @@ mod tests {
         assert!(s2.contains("a.rs") && s2.contains("x") && s2.contains("y"));
         let s3 = describe_call("mystery", &json!({"k":1}));
         assert!(s3.contains("k"));
+    }
+
+    // —— PendingDetail:TUI 权限弹层的结构化明细(TDD)——
+
+    #[test]
+    fn detail_of_extracts_bash_and_file_edit() {
+        let d = detail_of("bash_exec", &json!({"command":"cargo test"}));
+        assert_eq!(d, PendingDetail::Bash { command: "cargo test".into() });
+
+        let d = detail_of("file_edit", &json!({"path":"a.rs","old_string":"x","new_string":"y"}));
+        assert_eq!(
+            d,
+            PendingDetail::FileEdit { path: "a.rs".into(), old_string: "x".into(), new_string: "y".into() }
+        );
+
+        assert_eq!(detail_of("grep_search", &json!({"pattern":"p"})), PendingDetail::Other);
+        assert_eq!(detail_of("todo_write", &json!({})), PendingDetail::Other);
+    }
+
+    /// 捕获型 handler:把收到的 PendingAction 存进共享槽(异步闭包经 Arc 写入,避免借用问题)
+    struct Capture(Arc<std::sync::Mutex<Option<PendingAction>>>);
+    #[async_trait::async_trait]
+    impl PermissionHandler for Capture {
+        async fn confirm(&self, a: &PendingAction) -> crate::error::Result<bool> {
+            *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(a.clone());
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn confirm_action_carries_detail() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(Echo)); // 非只读 → Confirm 路径
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let handler = Capture(Arc::clone(&captured));
+        let _ = execute_tool_call(&reg, &handler, &ctx(), &guard(), "t9", "echo", json!({"x":"1"})).await;
+        let action = captured.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let action = action.unwrap_or_else(|| panic!("应捕获到 PendingAction"));
+        assert_eq!(action.detail, PendingDetail::Other);
     }
 }
