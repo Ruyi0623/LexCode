@@ -1,4 +1,5 @@
 mod confirm;
+mod tui;
 mod ui;
 
 use anyhow::{Context, Result};
