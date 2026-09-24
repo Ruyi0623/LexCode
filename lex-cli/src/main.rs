@@ -33,9 +33,23 @@ struct Cli {
     /// 工作目录
     #[arg(short = 'C', default_value = ".")]
     cwd: PathBuf,
+    /// 强制纯文本流模式(跳过 TUI)
+    #[arg(long)]
+    plain: bool,
 }
 
-fn detect_project_type(cwd: &Path) -> String {
+/// 是否进入 TUI:--plain 强制纯文本;stdin/stdout 任一非 TTY(管道/重定向)自动降级。
+/// 与既有降级路径(`ui/input.rs`、`ui/settings.rs`)判定口径一致:两侧都必须是 TTY。
+fn use_tui(forced_plain: bool, interactive_tty: bool) -> bool {
+    !forced_plain && interactive_tty
+}
+
+/// 当前会话是否具备交互式终端(stdin 与 stdout 都是 TTY)
+fn interactive_tty() -> bool {
+    std::io::stdin().is_tty() && std::io::stdout().is_tty()
+}
+
+pub(crate) fn detect_project_type(cwd: &Path) -> String {
     if cwd.join("Cargo.toml").is_file() {
         "Rust".into()
     } else if cwd.join("package.json").is_file() {
@@ -224,20 +238,28 @@ async fn run() -> Result<()> {
     let cfg = Config::load(&cwd)?;
     let input = std::sync::Arc::new(confirm::CliInput::new());
     let handler: std::sync::Arc<dyn lex_core::security::PermissionHandler> = input.clone();
-    // 待办清单在 run() 层建好即交给 build_loop(run() 自身不再持有);TUI 模块为既定的后续复用方
+    // 待办清单在 run() 层建好即交给 build_loop;TUI 侧句柄由 run_tui 从 agent.tool_ctx.todos 派生
     let todos: std::sync::Arc<std::sync::Mutex<Vec<lex_core::tools::Todo>>> = Default::default();
     let renderer = Arc::new(Mutex::new(ui::events::Renderer::new()));
+    // 模式在 build_loop 之前判定:TUI 模式下不能注入纯文本渲染钩子,
+    // 否则工具结果/子 agent 活动行会往 stdout 打 ANSI,破坏 TUI 画面。
+    let tui_mode = cli.task.is_empty() && use_tui(cli.plain, interactive_tty());
     let mut agent = build_loop(
         &cfg,
         cwd.clone(),
         handler,
         todos,
-        Some(make_result_hook(&renderer)),
-        Some(make_child_event_hook(&renderer)),
+        if tui_mode { None } else { Some(make_result_hook(&renderer)) },
+        if tui_mode { None } else { Some(make_child_event_hook(&renderer)) },
     )?;
 
     if cli.task.is_empty() {
-        interactive_session(&mut agent, &input, &cfg, &cwd).await
+        if tui_mode {
+            // agent 所有权移交 TUI(其内部替换 handler 为弹层裁决、重挂工具结果钩子)
+            tui::run::run_tui(agent, &cwd).await
+        } else {
+            interactive_session(&mut agent, &input, &cfg, &cwd).await
+        }
     } else {
         let task = cli.task.join(" ");
         let text = agent
@@ -336,5 +358,18 @@ async fn interactive_session(
             anstream::println!("\n{}", ui::theme::error(&format!("本轮失败: {e}")));
             anstream::println!("(历史已保留,可直接继续描述或纠正)");
         }
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::use_tui;
+
+    #[test]
+    fn tui_requires_tty_and_absence_of_plain_flag() {
+        assert!(use_tui(false, true));
+        assert!(!use_tui(false, false), "非 TTY 必须降级纯文本");
+        assert!(!use_tui(true, true), "--plain 强制纯文本");
+        assert!(!use_tui(true, false));
     }
 }
