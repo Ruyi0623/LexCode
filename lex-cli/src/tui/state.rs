@@ -1,6 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use lex_core::security::PendingAction;
-use ratatui::text::Line;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+
+use crate::ui::theme;
 
 use super::event::UiEvent;
 
@@ -18,6 +21,8 @@ pub struct AppState {
     pub usage: Option<String>,
     pub pending_confirm: Option<ConfirmModal>,
     pub quit: bool,
+    /// 最后一行是否为"正在流式写入"的正文行(决定下一片 token 续接还是另起一行)
+    text_open: bool,
 }
 
 impl AppState {
@@ -31,6 +36,7 @@ impl AppState {
             usage: None,
             pending_confirm: None,
             quit: false,
+            text_open: false,
         }
     }
 
@@ -41,14 +47,18 @@ impl AppState {
                 self.busy = true;
                 self.status = "思考中…".into();
                 self.usage = None;
+                // 新一轮的正文不得续接到上一轮结尾
+                self.text_open = false;
             }
             UiEvent::TextDelta(t) => {
                 for (i, seg) in t.split('\n').enumerate() {
-                    if i > 0 {
-                        self.transcript.push(Line::from("".to_string()));
-                    }
-                    if !seg.is_empty() {
+                    if i == 0 {
+                        // 首片续接当前行(流式 token 逐片到达)
+                        self.append_text(seg);
+                    } else {
+                        // '\n' 之后的分片各自开一行(末片为空时留作待续接的行)
                         self.transcript.push(Line::from(seg.to_string()));
+                        self.text_open = true;
                     }
                 }
             }
@@ -68,6 +78,8 @@ impl AppState {
             UiEvent::ToolResult { tool_name, first_line, is_error } => {
                 let mark = if is_error { "⎿ ✗ " } else { "⎿ " };
                 self.transcript.push(Line::from(format!("  {mark}{first_line}")));
+                // 工具结果行之后的正文另起一行,不续到 ⎿ 行上
+                self.text_open = false;
                 if tool_name == "todo_write" {
                     self.todos = todos.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 }
@@ -90,6 +102,7 @@ impl AppState {
                     self.status = "本轮已中断/失败".into();
                     if !message.is_empty() {
                         self.transcript.push(Line::from(format!("⚠ {message}")));
+                        self.text_open = false;
                     }
                 }
             }
@@ -104,6 +117,33 @@ impl AppState {
     pub fn open_confirm(&mut self, action: PendingAction) {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         self.pending_confirm = Some(ConfirmModal { action, responder: tx });
+    }
+
+    /// 回显用户提交的输入:输入盒提交后会清空,不回显就等于"自己说过的话凭空消失"
+    pub fn push_user_input(&mut self, text: &str) {
+        self.transcript.push(Line::from(vec![
+            Span::styled("› ", Style::default().fg(theme::C_ACCENT)),
+            Span::raw(text.to_string()),
+        ]));
+        self.text_open = false;
+    }
+
+    /// 追加一段流式正文到"当前行":token 逐片到达,同一段回复必须续在同一行。
+    /// `text_open == false`(工具结果/用户回显/新一轮之后)时另起一行。
+    fn append_text(&mut self, seg: &str) {
+        if self.text_open {
+            if let Some(last) = self.transcript.last_mut() {
+                if !seg.is_empty() {
+                    last.spans.push(Span::raw(seg.to_string()));
+                }
+                return;
+            }
+        }
+        if seg.is_empty() {
+            return; // 空片段不建行,避免误插空行
+        }
+        self.transcript.push(Line::from(seg.to_string()));
+        self.text_open = true;
     }
 
     fn answer_confirm(&mut self, allow: bool) {
@@ -202,5 +242,71 @@ mod tests {
         let mut app = AppState::new();
         app.apply(UiEvent::ThinkingDelta(String::new()), &no_todos());
         assert_eq!(app.status, "思考中…");
+    }
+
+    fn line_text(l: &Line) -> String {
+        l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// 回归:正文按 token 流式到达,同一段回复必须续在同一行
+    /// (曾把每个 TextDelta 都当新行 → 整段回复被拆成"一行一个词")
+    #[test]
+    fn consecutive_text_deltas_share_one_line() {
+        let mut app = AppState::new();
+        app.apply(UiEvent::TextDelta("排查".into()), &no_todos());
+        app.apply(UiEvent::TextDelta("某个".into()), &no_todos());
+        app.apply(UiEvent::TextDelta("bug".into()), &no_todos());
+        assert_eq!(app.transcript.len(), 1, "同段回复不应拆成多行");
+        assert_eq!(line_text(&app.transcript[0]), "排查某个bug");
+    }
+
+    #[test]
+    fn newline_in_delta_breaks_line_and_next_delta_continues() {
+        let mut app = AppState::new();
+        app.apply(UiEvent::TextDelta("第一行\n第二".into()), &no_todos());
+        app.apply(UiEvent::TextDelta("行".into()), &no_todos());
+        assert_eq!(app.transcript.len(), 2);
+        assert_eq!(line_text(&app.transcript[0]), "第一行");
+        assert_eq!(line_text(&app.transcript[1]), "第二行");
+    }
+
+    /// 工具结果行之后到达的正文必须另起一行,不能续到 ⎿ 行上
+    #[test]
+    fn text_after_tool_result_starts_new_line() {
+        let mut app = AppState::new();
+        app.apply(UiEvent::TextDelta("先看文件".into()), &no_todos());
+        app.apply(
+            UiEvent::ToolResult { tool_name: "file_read".into(), first_line: "读到 3 行".into(), is_error: false },
+            &no_todos(),
+        );
+        app.apply(UiEvent::TextDelta("结论如下".into()), &no_todos());
+        assert_eq!(app.transcript.len(), 3);
+        assert!(line_text(&app.transcript[1]).starts_with("  ⎿ 读到 3 行"));
+        assert_eq!(line_text(&app.transcript[2]), "结论如下");
+    }
+
+    /// 用户提交的话必须回显,否则输入盒清空后自己说了什么就看不到了
+    #[test]
+    fn submitted_input_is_echoed_into_transcript() {
+        let mut app = AppState::new();
+        app.push_user_input("修一下这个 bug");
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(line_text(&app.transcript[0]), "› 修一下这个 bug");
+        // 回显之后模型正文另起一行
+        app.apply(UiEvent::TextDelta("好的".into()), &no_todos());
+        assert_eq!(app.transcript.len(), 2);
+        assert_eq!(line_text(&app.transcript[1]), "好的");
+    }
+
+    /// 新一轮开始:上一轮的正文不再被续接
+    #[test]
+    fn new_turn_does_not_append_to_previous_reply() {
+        let mut app = AppState::new();
+        app.apply(UiEvent::TextDelta("上一轮结尾".into()), &no_todos());
+        app.apply(UiEvent::TurnStarted, &no_todos());
+        app.apply(UiEvent::TextDelta("本轮开头".into()), &no_todos());
+        assert_eq!(app.transcript.len(), 2);
+        assert_eq!(line_text(&app.transcript[0]), "上一轮结尾");
+        assert_eq!(line_text(&app.transcript[1]), "本轮开头");
     }
 }

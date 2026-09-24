@@ -4,7 +4,7 @@ use crate::ui::theme;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
 pub fn draw(app: &mut AppState, f: &mut Frame) {
@@ -30,7 +30,8 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut AppState) {
     let visible = inner.height as usize;
     let start = app.transcript.len().saturating_sub(visible.saturating_sub(1));
     let lines: Vec<Line> = app.transcript[start..].to_vec();
-    f.render_widget(Paragraph::new(lines), inner);
+    // 必须显式折行:ratatui 默认不折行,超宽正文会被直接截断(长回复尾部看不见)
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_todos(f: &mut Frame, area: Rect, app: &mut AppState) {
@@ -238,5 +239,16 @@ mod tests {
         let styled = super::styled_diff_lines(&lines);
         assert_eq!(styled[0].spans[0].style.fg, Some(crate::ui::theme::C_DIFF_ADD));
         assert_eq!(styled[1].spans[0].style.fg, Some(crate::ui::theme::C_DIFF_DEL));
+    }
+
+    /// 超宽正文必须折行:不折行时 ratatui 会直接截断,长回复的尾部根本看不到
+    #[test]
+    fn long_transcript_line_wraps_instead_of_truncating() {
+        let todos: Arc<Mutex<Vec<lex_core::tools::Todo>>> = Arc::new(Mutex::new(vec![]));
+        let mut app = AppState::new();
+        // 124 字符 > 对话面板内宽(80 列的 75% 再减两侧边框),必然需要多行
+        app.apply(UiEvent::TextDelta(format!("{}结尾标记", "很长的一段话".repeat(20))), &todos);
+        let screen = render(&mut app, 80, 24);
+        assert!(screen.contains("结尾标记"), "超宽正文应折行而非截断,实际:\n{screen}");
     }
 }

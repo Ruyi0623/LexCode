@@ -131,6 +131,8 @@ fn ui_loop(
                         match app.handle_key(key) {
                             KeyOutcome::None => {}
                             KeyOutcome::Submit(text) => {
+                                // 先回显再送出:输入盒随后被清空
+                                app.push_user_input(&text);
                                 let _ = cmd_tx.blocking_send(UiCommand::Submit(text));
                             }
                             // 裁决经弹层的 oneshot 回执送达 agent 侧,此处无需额外转发
