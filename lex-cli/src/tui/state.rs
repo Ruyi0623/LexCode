@@ -99,8 +99,9 @@ impl AppState {
         }
     }
 
+    /// 测试辅助:直接构造无 responder 的弹层(真实路径经 `apply(UiEvent::Confirm)`)
+    #[cfg(test)]
     pub fn open_confirm(&mut self, action: PendingAction) {
-        // 测试辅助:直接构造无 responder 的弹层
         let (tx, _rx) = tokio::sync::oneshot::channel();
         self.pending_confirm = Some(ConfirmModal { action, responder: tx });
     }
