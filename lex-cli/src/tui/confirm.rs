@@ -43,12 +43,12 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<UiEvent>();
         let handler = TuiConfirm::new(tx);
         let h = tokio::spawn(async move { handler.confirm(&action()).await });
-        match rx.recv().unwrap_or_else(|_| panic!("应收到 Confirm 事件")) {
+        match rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap_or_else(|_| panic!("2 秒内应收到 Confirm 事件")) {
             UiEvent::Confirm { action: a, responder } => {
                 assert_eq!(a.tool_name, "bash_exec");
                 responder.send(true).unwrap_or(());
             }
-            o => panic!("期望 Confirm,收到其他非 Confirm 事件(UiEvent 不可 Debug,故不打印内容)"),
+            _ => panic!("期望 Confirm,收到其他非 Confirm 事件(UiEvent 不可 Debug,故不打印内容)"),
         }
         assert!(h.await.unwrap_or_else(|_| Err(lex_core::error::LexError::Tool("join 失败".into()))).unwrap_or(false));
     }
