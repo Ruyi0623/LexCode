@@ -199,3 +199,37 @@ set LEX_OPENAI_API_KEY=<你的 DeepSeek Key>         (CMD)
 - [ ] 最终回复为结构化摘要(做了什么/关键结论/修改的文件)
 - [ ] 子 agent 内的工具调用走同一条权限检查路径,父级 Forbidden 规则在子 agent 内同样硬拦截
 - [ ] 子 agent 无缓存遥测输出(设计决定,理由见上)
+
+## 11. Phase 6 模块二冒烟:ratatui TUI
+
+新增:`lex-cli/src/tui/`(`diff` 行级 diff、`event` 事件模型、`state` AppState 与按键路由、`draw` 布局与确认弹层、`confirm` TuiConfirm 权限裁决、`run` 事件循环与终端接管)、`lex-core` 侧 `security::PendingDetail`(弹层数据源:命令原文 / file_edit 三段)、`--plain` 参数与非 TTY 自动降级。
+
+### 自动化部分(已执行)
+
+| 检查项 | 命令 | 结论 |
+| --- | --- | --- |
+| `--plain` 参数存在 | `lex-code --help` | 通过 |
+| 非 TTY 自动降级 | `echo "" \| lex-code -C <smoke>` | 通过:输出无备用屏幕(`ESC[?1049h`)与清屏序列,EOF 后正常退出(exit 0) |
+| 单任务纯文本路径无回归 | `lex-code -C <smoke> "reply with the single word: ok"` | 通过:模型回 `ok`,token 尾注与单任务收尾正文正常 |
+
+按键路由、四区布局、待办面板刷新、弹层 diff 着色由 `lex-cli` 单测以 `TestBackend` 断言缓冲区内容覆盖:`cargo test -p lex-cli tui::`(注意:`TestBackend` 缓冲对宽字符(CJK)会占两格,测试助手按显示宽度跳过占位格后再拼接,否则会拼出 `你 好` 这种带假空格的串)。
+
+### 交互部分(需真实终端执行)
+
+TUI 本体要求 stdin 与 stdout **都是** TTY;重定向 stdio 下 `winpty` 无法分配带尺寸的控制台(报 `ASSERT_CONDITION(... cols > 0 && rows > 0)`),故以下清单须在交互终端手工执行:
+
+1. 交互模式启动:出现多区域布局(对话 / 待办 / 输入盒 / 状态行),无乱码。
+2. 输入一个会触发 `todo_write` 的任务("用待办清单跟踪:1 读 README 2 总结"),待办面板随进度更新(`☐` 待办 / `◐` 进行中 / `☑` 已完成)。
+3. 触发 `bash_exec`:弹层显示**命令原文**(`$ <命令>`);触发 `file_edit`:弹层显示带色 diff(删行红 `- old`、增行绿 `+ new`);`y` 放行、`n`/`Esc` 拒绝均正常回到对话流。
+4. 任务执行中按 `Ctrl+C`:本轮中断、状态行提示"本轮已中断/失败"、可继续输入(验证 `recover_interrupt` 后下一轮请求不被 400 拒绝)。
+5. 空闲时按 `Ctrl+C`:整屏恢复、无控制字符残留。
+6. `lex-code --plain`:回到第 5～9 节的纯文本流模式,行为一致。
+7. `lex-code | cat`(重定向):纯文本输出,无 ANSI 残留。
+
+### 验收清单
+
+- [ ] 启动即多区域布局,待办面板随 `todo_write` 结果更新
+- [ ] 权限确认弹层展示命令原文 / 带色 diff(而不是"是否继续?"式笼统提示),`y`/`n`/`Esc` 均生效
+- [ ] `Ctrl+C` 执行中打断本轮、空闲时退出;退出后终端屏幕与光标恢复正常
+- [ ] `--plain` 与非 TTY 均降级为纯文本,重定向输出无控制字符残留
+

@@ -58,6 +58,29 @@ lex-code -C D:/my/project 梳理项目结构     # 指定工作目录
 交互模式提供仿 Claude Code 的终端界面:蓝色主题启动画面、圆角输入盒(`↑↓` 翻历史、`Ctrl+C` 清空/退出、`Ctrl+D` 退出)、工具活动行(`● 工具(参数)` + `⎿ 结果首行`)与 token 尾注;任务执行中按 `Ctrl+C` 可打断当前轮(自动清理历史,可直接继续)。管道/重定向(非 TTY)自动降级为行式输入。
 - /settings:打开设置页面(只读快照,四模块:模型与 Provider / 权限与安全 / 上下文与压缩 / 外观·日志·关于;↑↓/数字选择,Enter 详情,q/Esc 返回;非交互终端自动降级为纯文本摘要)。配置编辑能力待后续版本。
 
+## TUI 模式(全屏交互界面)
+
+交互终端下默认启用 ratatui 全屏界面;`--plain` 强制纯文本流;stdin/stdout 任一非 TTY(管道/重定向)自动降级为行式输入。
+
+```bash
+lex-code            # 交互终端 → 全屏 TUI
+lex-code --plain    # 强制纯文本流(与 Phase 5 行为一致)
+lex-code | cat      # stdout 非 TTY → 自动降级纯文本
+```
+
+**布局**:左侧对话主输出区、右侧待办面板(`todo_write` 结果到达即刷新,`☐` 待办 / `◐` 进行中 / `☑` 已完成)、底部输入盒与状态行(左侧状态含思考片段,右侧 token 用量与缓存命中)。
+
+**权限确认改为居中弹层**:`bash_exec` 展示**命令原文**,`file_edit` 展示带色 diff(增行绿、删行红);不再使用纯文本的 `[y/N]` 行式提问。
+
+| 按键 | 作用 |
+| --- | --- |
+| `Enter` | 提交输入(空输入不提交) |
+| `Ctrl+C` | 任务执行中:打断本轮(清理历史后可直接继续);空闲时:退出 |
+| `Ctrl+U` | 清空输入盒 |
+| `y` / `n` / `Esc` | 确认弹层:允许 / 拒绝 |
+
+渲染跑在独立线程,与 agent 事件流经 channel 解耦(20ms 轮询排空事件后重绘),agent 不被渲染阻塞;退出时离开备用屏幕并关闭 raw mode。TUI 的按键、布局、diff 着色由 `TestBackend` 单测覆盖,交互式验收清单见 `examples/smoke/README.md` 第 11 节。
+
 ## 配置参考
 
 优先级:**环境变量(`LEX_*`)> 项目级 `lex-code.toml`(工作目录)> 内置默认**。
@@ -153,7 +176,7 @@ cargo test -p lex-core        # 仅核心库
 
 ```
 lex-core/src/    核心库:message / provider / agent / tools / security / context / config / prompt
-lex-cli/src/     终端 UI:main / render / confirm
+lex-cli/src/     终端 UI:main / confirm / ui(theme/banner/input/markdown/events/settings) / tui(diff/event/state/draw/confirm/run)
 assets/          运行时系统提示词(外部资源,不硬编码进代码)
 docs/            设计文档与需求任务书
 examples/smoke/  真实 API 冒烟步骤与联调结论
@@ -163,6 +186,6 @@ examples/smoke/  真实 API 冒烟步骤与联调结论
 
 Phase 1–5 已完成:MVP 闭环、Provider 泛化(DeepSeek 真实冒烟,缓存命中 97%)、三级权限 + 只读并发、AGENTS.md 注入 + 上下文压缩 + 前缀缓存遥测、错误边界与可观测性打磨。
 
-Phase 6 模块一已完成:`spawn_subagent` 子 agent 派生机制——独立上下文的子 agent 复用同一 AgentLoop 状态机,权限继承父级、深度硬上限 2 层、并发派生受 provider 层节流,只把结构化摘要交回主对话。模块二(ratatui TUI)计划已写、待实施。
+Phase 6 已完成:模块一 `spawn_subagent` 子 agent 派生机制(独立上下文的子 agent 复用同一 AgentLoop 状态机,权限继承父级、深度硬上限 2 层、并发派生受 provider 层节流,只把结构化摘要交回主对话);模块二 ratatui TUI(多区域布局、待办面板、权限确认弹层含命令原文/diff 着色、渲染线程与 agent 事件流 channel 解耦、`--plain` 与非 TTY 自动降级)。
 
 明确不做:GUI / IDE 插件、多用户协作 / 服务化、CI/CD 集成。
