@@ -52,8 +52,15 @@ impl AppState {
                     }
                 }
             }
-            UiEvent::ThinkingDelta(_) => {
-                self.status = "思考中…".into();
+            UiEvent::ThinkingDelta(text) => {
+                // 纯文本路径会把思考内容打到屏幕上;TUI 无回滚区,
+                // 退而在状态行显示"最后一行"的截断片段(避免逐 token 抖动时整屏铺开)
+                let snippet: String = text.lines().last().unwrap_or("").trim().chars().take(40).collect();
+                self.status = if snippet.is_empty() {
+                    "思考中…".into()
+                } else {
+                    format!("思考中… {snippet}")
+                };
             }
             UiEvent::ToolStart { name } => {
                 self.status = format!("执行 {name}…");
@@ -161,4 +168,38 @@ pub enum KeyOutcome {
     Confirm(bool),
     Interrupt,
     Quit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_todos() -> std::sync::Mutex<Vec<lex_core::tools::Todo>> {
+        std::sync::Mutex::new(Vec::new())
+    }
+
+    /// 纯文本路径会把思考内容打到屏幕上;TUI 无回滚区,退而在状态行显示最新片段
+    #[test]
+    fn thinking_delta_shows_snippet_in_status() {
+        let mut app = AppState::new();
+        app.apply(UiEvent::ThinkingDelta("正在分析缓存前缀".into()), &no_todos());
+        assert!(app.status.contains("正在分析缓存前缀"), "状态行应反映思考内容,实际: {}", app.status);
+    }
+
+    #[test]
+    fn thinking_snippet_is_truncated_and_takes_last_line() {
+        let mut app = AppState::new();
+        let long = "第一行\n".to_string() + &"很长的一段思考".repeat(20);
+        app.apply(UiEvent::ThinkingDelta(long), &no_todos());
+        assert!(app.status.contains("很长"), "应取最后一行内容,实际: {}", app.status);
+        assert!(!app.status.contains("第一行"), "只取最后一行,实际: {}", app.status);
+        assert!(app.status.chars().count() <= 60, "状态片段须截断,实际长度 {}", app.status.chars().count());
+    }
+
+    #[test]
+    fn empty_thinking_keeps_plain_hint() {
+        let mut app = AppState::new();
+        app.apply(UiEvent::ThinkingDelta(String::new()), &no_todos());
+        assert_eq!(app.status, "思考中…");
+    }
 }
