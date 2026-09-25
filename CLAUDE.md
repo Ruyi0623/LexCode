@@ -16,7 +16,7 @@
 
 ```bash
 export PATH="$HOME/.cargo/bin:/d/mingw64/bin:$PATH"   # Git Bash 下通常需要
-cargo test --workspace        # 全部测试(当前 214 个)
+cargo test --workspace        # 全部测试(当前 249 个)
 cargo test -p lex-core        # 仅核心库
 cargo build --release -p lex-cli   # 产物在 D:/lexcode-target/release/lex-code.exe
 ```
