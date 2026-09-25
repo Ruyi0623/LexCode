@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="992" height="530" viewBox="0 0 992 530">
+  <title>Lex Code 架构 — lex-cli 到 lex-core 依赖单向</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3b82f6"/>
+    </marker>
+  </defs>
+  <style><![CDATA[
+    text { font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Microsoft YaHei", "Noto Sans CJK SC", monospace; }
+  ]]></style>
+  <rect x="0.5" y="0.5" width="991" height="529" rx="8" fill="#0d1117" stroke="#21262d"/>
+
+  <!-- lex-cli 面板 -->
+  <rect x="76" y="20" width="840" height="132" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="100" y="46" font-size="15" font-weight="700" fill="#c9d1d9">lex-cli <tspan fill="#8b949e" font-weight="400">· 终端 UI</tspan></text>
+  <rect x="100" y="58" width="372" height="80" rx="6" fill="#161b22" stroke="#30363d"/>
+  <text x="286" y="88" text-anchor="middle" font-size="14" font-weight="700" fill="#c9d1d9">纯文本 REPL</text>
+  <text x="286" y="110" text-anchor="middle" font-size="12" fill="#8b949e">theme / banner / input / markdown / settings</text>
+  <text x="286" y="128" text-anchor="middle" font-size="12" fill="#8b949e">非 TTY 自动降级 · 行编辑 · ↑↓ 历史</text>
+  <rect x="520" y="58" width="372" height="80" rx="6" fill="#161b22" stroke="#30363d"/>
+  <text x="706" y="88" text-anchor="middle" font-size="14" font-weight="700" fill="#c9d1d9">ratatui TUI</text>
+  <text x="706" y="110" text-anchor="middle" font-size="12" fill="#8b949e">draw · state · confirm · diff · markdown</text>
+  <text x="706" y="128" text-anchor="middle" font-size="12" fill="#8b949e">对话区 / 待办面板 / 输入盒 / 确认弹层</text>
+
+  <!-- 双向通道 -->
+  <line x1="390" y1="162" x2="390" y2="220" stroke="#3b82f6" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="376" y="196" text-anchor="end" font-size="12" fill="#8b949e">UiCommand · 确认回执</text>
+  <line x1="602" y1="220" x2="602" y2="162" stroke="#3b82f6" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="616" y="196" text-anchor="start" font-size="12" fill="#8b949e">AgentEvent 事件流(channel 解耦)</text>
+
+  <!-- lex-core 面板 -->
+  <rect x="76" y="232" width="840" height="246" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="100" y="258" font-size="15" font-weight="700" fill="#c9d1d9">lex-core <tspan fill="#8b949e" font-weight="400">· 核心库</tspan></text>
+  <text x="112" y="292" font-size="14" font-weight="700" fill="#3b82f6">agent</text>
+  <text x="250" y="292" font-size="13" fill="#c9d1d9">AgentLoop 状态机 · 子 agent 派生(SubagentRuntime)</text>
+  <text x="112" y="322" font-size="14" font-weight="700" fill="#3b82f6">provider</text>
+  <text x="250" y="322" font-size="13" fill="#c9d1d9">Anthropic / OpenAI 兼容 · SSE 流式 · 前缀缓存一致性校验与遥测</text>
+  <text x="112" y="352" font-size="14" font-weight="700" fill="#3b82f6">tools</text>
+  <text x="250" y="352" font-size="13" fill="#c9d1d9">Tool trait + 注册表:6 个内置工具,只读并发、副作用串行</text>
+  <text x="112" y="382" font-size="14" font-weight="700" fill="#3b82f6">security</text>
+  <text x="250" y="382" font-size="13" fill="#c9d1d9">三级权限检查器 · 内置于 execute_tool_call,上层不可绕过</text>
+  <text x="112" y="412" font-size="14" font-weight="700" fill="#3b82f6">context</text>
+  <text x="250" y="412" font-size="13" fill="#c9d1d9">AGENTS.md 注入 · token 估算 · 历史压缩</text>
+  <text x="112" y="442" font-size="14" font-weight="700" fill="#3b82f6">message</text>
+  <text x="250" y="442" font-size="13" fill="#c9d1d9">中立消息模型(Thinking / ToolUse / ToolResult)</text>
+
+  <text x="496" y="510" text-anchor="middle" font-size="12" fill="#8b949e">依赖单向:lex-cli → lex-core;core 内 agent → provider / tools / security / context</text>
+</svg>

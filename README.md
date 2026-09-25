@@ -48,22 +48,7 @@ Lex Code 把"给一个任务、看着它自己干活"的 agent 体验完整搬�
 
 ## 架构
 
-```
-┌────────────────────────────── lex-cli(终端 UI)──────────────────────────────┐
-│  纯文本 REPL(theme/banner/input/markdown/settings)                          │
-│  ratatui TUI(tui/{draw,state,confirm,diff,markdown}:对话区/待办/输入盒)     │
-└─────────────────────────────────┬───────────────────────────────────────────┘
-                                  │ AgentEvent 事件流(channel 解耦)· UiCommand · 确认回执
-┌─────────────────────────────────▼───────────── lex-core(核心库)─────────────┐
-│  agent    AgentLoop 状态机 · 子 agent 派生(SubagentRuntime)                │
-│  provider AnthropicProvider / OpenAiCompatProvider(SSE 流式,共用重试)      │
-│           ImplicitPrefixCacheStrategy(前缀缓存一致性校验 + 命中率遥测)       │
-│  tools    Tool trait + 注册表:6 个内置工具,只读并发、副作用串行             │
-│  security 三级权限检查器(内置于 execute_tool_call,不可绕过)                │
-│  context  AGENTS.md 注入 · token 估算 · 历史压缩                             │
-│  message  中立消息模型(Block::Thinking/ToolUse/ToolResult)                  │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+![Lex Code 架构](docs/assets/arch.svg)
 
 关键设计约束:
 
@@ -234,7 +219,7 @@ cargo test -p lex-core        # 仅核心库
 lex-core/src/    核心库:message / provider / agent / tools / security / context / config / prompt
 lex-cli/src/     终端 UI:main / confirm / ui(theme/banner/input/markdown/events/settings) / tui(...)
 assets/          运行时系统提示词(外部资源,不硬编码进代码)
-docs/assets/     界面原型图源文件与图片(tui-prototype.html + 动效 SVG)
+docs/assets/     界面原型图、架构图与源文件(tui-prototype.html + 动效 SVG)
 examples/smoke/  真实 API 冒烟步骤与联调结论
 ```
 
