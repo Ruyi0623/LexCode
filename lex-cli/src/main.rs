@@ -85,14 +85,10 @@ fn build_system_prompt(cfg: &Config, cwd: &Path) -> Result<String> {
     Ok(render_template(&template, &vars))
 }
 
-fn build_loop(
+/// 从配置构建节流 Provider(/settings 热切换复用同一构建路径)
+fn build_throttled_provider(
     cfg: &Config,
-    cwd: PathBuf,
-    handler: std::sync::Arc<dyn lex_core::security::PermissionHandler>,
-    todos: std::sync::Arc<std::sync::Mutex<Vec<lex_core::tools::Todo>>>,
-    on_tool_result: Option<ToolResultHook>,
-    on_child_event: Option<lex_core::agent::ChildEventHook>,
-) -> Result<AgentLoop> {
+) -> Result<lex_core::provider::throttle::ThrottledProvider> {
     let api_key = resolve_api_key(&cfg.provider)?;
     // 切换 provider 只改配置,不改 Agent Loop:两者实现同一个 Provider trait
     let inner: std::sync::Arc<dyn Provider> = match cfg.provider.as_str() {
@@ -115,7 +111,18 @@ fn build_loop(
         )?),
     };
     // 主循环与所有子 agent 共享同一并发节流(默认 3 条在途流)
-    let throttled = lex_core::provider::throttle::ThrottledProvider::new(inner, lex_core::provider::throttle::MAX_CONCURRENT_STREAMS);
+    Ok(lex_core::provider::throttle::ThrottledProvider::new(inner, lex_core::provider::throttle::MAX_CONCURRENT_STREAMS))
+}
+
+fn build_loop(
+    cfg: &Config,
+    cwd: PathBuf,
+    handler: std::sync::Arc<dyn lex_core::security::PermissionHandler>,
+    todos: std::sync::Arc<std::sync::Mutex<Vec<lex_core::tools::Todo>>>,
+    on_tool_result: Option<ToolResultHook>,
+    on_child_event: Option<lex_core::agent::ChildEventHook>,
+) -> Result<AgentLoop> {
+    let throttled = build_throttled_provider(cfg)?;
 
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FileRead));
@@ -145,12 +152,14 @@ fn build_loop(
     let context_limit = cfg.context.enabled.then_some(cfg.context.limit);
 
     let rules = SecurityRules::build(&cfg.security)?;
+    // 主循环与整棵子 agent 树共用同一 handler 槽位:TUI 运行期 set() 换弹层时子 agent 同步生效
+    let shared_handler = lex_core::agent::SharedHandler::new(handler.clone());
     // depth=0 派生器:与主循环共享节流 provider / 注册表 / 权限配置,子 agent 权限不高于父级
     let spawner: std::sync::Arc<dyn lex_core::tools::SubagentSpawner> = std::sync::Arc::new(
         lex_core::agent::subagent::SubagentRuntime::new(
             throttled.clone(),
             system.clone(),
-            handler.clone(),
+            shared_handler.clone(),
             rules.clone(),
             cwd.clone(),
             shell.clone(),
@@ -168,7 +177,7 @@ fn build_loop(
     Ok(AgentLoop {
         provider: Box::new(throttled),
         registry: (*registry).clone(),
-        handler: Box::new(handler),
+        handler: shared_handler,
         tool_ctx: ToolContext { cwd, shell, todos, spawner: Some(spawner) },
         security: SecurityGuard::new(rules),
         system,
@@ -219,20 +228,64 @@ async fn main() {
     }
 }
 
+/// TUI 模式的日志文件槽(setup 阶段装入; tracing 写入走它而非 stderr)
+static TUI_LOG_FILE: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> = std::sync::OnceLock::new();
+
+struct TuiFileWriterGuard;
+
+impl std::io::Write for TuiFileWriterGuard {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(m) = TUI_LOG_FILE.get() {
+            if let Ok(mut f) = m.lock() {
+                return std::io::Write::write(&mut *f, buf);
+            }
+        }
+        // 文件不可用时静默丢弃:日志绝不能污染 TUI 画面
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        if let Some(m) = TUI_LOG_FILE.get() {
+            if let Ok(mut f) = m.lock() {
+                return std::io::Write::flush(&mut *f);
+            }
+        }
+        Ok(())
+    }
+}
+
 async fn run() -> Result<()> {
     let cli = Cli::parse();
-    // 日志级别:LEX_LOG > RUST_LOG > 默认 warn(全部写到 stderr,不污染终端渲染)
+    // 日志级别:LEX_LOG > RUST_LOG > 默认 warn
     let filter = std::env::var("LEX_LOG")
         .ok()
         .filter(|v| !v.trim().is_empty())
         .or_else(|| std::env::var("RUST_LOG").ok())
         .unwrap_or_else(|| "warn".into());
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-        .with_writer(std::io::stderr)
-        // stderr 非 TTY(管道/重定向)时关 ANSI,避免裸转义码
-        .with_ansi(std::io::stderr().is_tty())
-        .init();
+    // TUI 全屏模式:stderr 会砸坏 ratatui 画面(日志文本画进输入框等区域),
+    // 日志改写临时目录文件;其余模式照旧写 stderr
+    let tui_planned = cli.task.is_empty() && use_tui(cli.plain, interactive_tty());
+    if tui_planned {
+        let path = std::env::temp_dir().join("lex-code-tui.log");
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = TUI_LOG_FILE.set(std::sync::Mutex::new(f));
+        }
+    }
+    // 统一写入者:装入 TUI 日志文件则写文件,否则回落 stderr(文件不可用的兜底)
+    let filter_env = tracing_subscriber::EnvFilter::new(filter);
+    if tui_planned && TUI_LOG_FILE.get().is_some() {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter_env)
+            .with_writer(|| TuiFileWriterGuard)
+            .with_ansi(false) // 文件不带 ANSI
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter_env)
+            .with_writer(std::io::stderr)
+            // stderr 非 TTY(管道/重定向)时关 ANSI,避免裸转义码
+            .with_ansi(std::io::stderr().is_tty())
+            .init();
+    }
 
     let cwd = std::fs::canonicalize(&cli.cwd).context("工作目录不存在")?;
     let cfg = Config::load(&cwd)?;
@@ -256,7 +309,8 @@ async fn run() -> Result<()> {
     if cli.task.is_empty() {
         if tui_mode {
             // agent 所有权移交 TUI(其内部替换 handler 为弹层裁决、重挂工具结果钩子)
-            tui::run::run_tui(agent, &cwd).await
+            let cfg_shared = std::sync::Arc::new(std::sync::Mutex::new(cfg.clone()));
+            tui::run::run_tui(agent, &cwd, cfg_shared, build_throttled_provider).await
         } else {
             interactive_session(&mut agent, &input, &cfg, &cwd).await
         }
@@ -290,7 +344,7 @@ async fn interactive_session(
 
     loop {
         let outcome = ui::input::read_input(&mut history, input).await?;
-        let line = match outcome {
+        let mut line = match outcome {
             ui::input::InputOutcome::Exit => {
                 anstream::println!("\n再见");
                 return Ok(());
@@ -328,8 +382,23 @@ async fn interactive_session(
                 ui::banner::print(&cfg.provider, &current_model(cfg), &display_path(cwd), &detect_project_type(cwd));
                 continue;
             }
+            Some(ui::settings::SlashCommand::Compact) => {
+                anstream::println!("{}", ui::theme::dim("压缩中…"));
+                match agent.compact_now().await {
+                    Ok(msg) => anstream::println!("{}", ui::theme::success(&msg)),
+                    Err(e) => {
+                        anstream::println!("{}", ui::theme::error(&format!("压缩失败: {e:#}")));
+                        anstream::println!("(历史已保留,可直接继续)");
+                    }
+                }
+                continue;
+            }
+            Some(ui::settings::SlashCommand::Init) => {
+                // 等价于提交一条内置提示词:落到底部正常的模型路径
+                line = ui::settings::init_prompt();
+            }
             Some(ui::settings::SlashCommand::Unknown) => {
-                anstream::println!("{}", ui::theme::warn("未知命令,可用:/settings"));
+                anstream::println!("{}", ui::theme::warn("未知命令,可用:/settings /compact /init"));
                 continue;
             }
             None => {}

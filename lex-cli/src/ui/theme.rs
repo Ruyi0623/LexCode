@@ -55,3 +55,5 @@ pub const C_DIFF_ADD: Color = Color::Green; // diff 增行
 pub const C_DIFF_DEL: Color = Color::Red; // diff 删行
 pub const C_BORDER: Color = Color::DarkGray;
 pub const C_BG_MODAL: Color = Color::Black; // 弹层底色,压住下层内容
+pub const C_CODE: Color = Color::LightCyan; // 行内代码,对应上方 CODE 亮青
+pub const C_CODE_BG: Color = Color::Rgb(21, 34, 56); // 代码底色(强调蓝的暗色调,#152238),与终端背景区分
