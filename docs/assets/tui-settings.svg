@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="992" height="640" viewBox="0 0 992 640">
+  <title>Lex Code TUI 原型 — /settings 设置页</title>
+  <style><![CDATA[
+    .root { width: 992px; height: 640px; background: #0d1117; color: #c9d1d9;
+      font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Noto Sans Mono CJK SC", monospace;
+      font-size: 14px; line-height: 1.55; }
+    .screen { width: 992px; height: 640px; background: #0d1117; border: 1px solid #21262d;
+      border-radius: 8px; padding: 14px 12px 10px; box-sizing: border-box; position: relative;
+      display: flex; flex-direction: column; overflow: hidden; }
+    .ln { display: block; white-space: pre; }
+    .dim { color: #8b949e; }
+    .accent { color: #3b82f6; }
+    .settings { flex: 1; padding: 10px 12px; }
+    .set-head { color: #3b82f6; font-weight: 700; margin-bottom: 8px; }
+    .field { display: flex; white-space: pre; }
+    .field .k { color: #8b949e; width: 44ch; flex: 0 0 auto; }
+    .field.sel .k, .field.sel .v { color: #3b82f6; font-weight: 700; }
+    .set-note { color: #8b949e; margin-top: 10px; }
+    .input-box { margin-top: 10px; border: 1px solid #3b82f6; position: relative; padding: 5px 8px; min-height: 3.4em; }
+    .input-box .title { position: absolute; top: -11px; left: 8px; background: #0d1117; padding: 0 5px; }
+    .capacity { color: #8b949e; margin-top: 5px; }
+    .status { color: #8b949e; margin-top: 5px; display: flex; justify-content: space-between; }
+    .cursor { background: #c9d1d9; color: #0d1117; animation: blink 1.1s steps(1) infinite; }
+    @keyframes blink { 50% { background: transparent; color: #c9d1d9; } }
+  ]]></style>
+  <foreignObject x="0" y="0" width="992" height="640">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="root">
+      <div class="screen">
+        <div class="settings">
+          <span class="ln dim">设置 <span class="accent">›</span> 模块 1/4</span>
+          <span class="ln set-head">模型与 Provider</span>
+          <span class="ln dim">provider / model / base_url 保存后立即重建 provider,热生效。</span>
+          <span class="ln" style="margin-top:6px"> </span>
+          <span class="field"><span class="k">  provider</span><span class="v">openai</span></span>
+          <span class="field sel"><span class="k">› model</span><span class="v">deepseek-chat</span></span>
+          <span class="field"><span class="k">  base_url</span><span class="v">https://api.deepseek.com</span></span>
+          <span class="field"><span class="k">  max_tokens</span><span class="v">8192</span></span>
+          <span class="field"><span class="k">  thinking(仅 openai,空=不发送)</span><span class="v">(空)</span></span>
+          <span class="field"><span class="k">  reasoning_effort(仅 openai,空=不发送)</span><span class="v">high</span></span>
+          <span class="ln set-note">↑↓ 选择字段 · Enter 进入编辑 · Esc 返回模块列表 · q 退出设置页</span>
+        </div>
+        <div class="input-box">
+          <span class="title"> 编辑 model(Enter 保存,Esc 取消) </span><span class="accent">› </span>deepseek-chat<span class="cursor">&#160;</span>
+        </div>
+        <div class="capacity">主输入已暂存,Esc 恢复</div>
+        <div class="status"><span>设置 · 编辑中</span><span>保存即写回 lex-code.toml</span></div>
+      </div>
+    </div>
+  </foreignObject>
+</svg>

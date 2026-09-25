@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="992" height="640" viewBox="0 0 992 640">
+  <title>Lex Code TUI 原型 — 权限确认弹层</title>
+  <style><![CDATA[
+    .root { width: 992px; height: 640px; background: #0d1117; color: #c9d1d9;
+      font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Noto Sans Mono CJK SC", monospace;
+      font-size: 14px; line-height: 1.55; }
+    .screen { width: 992px; height: 640px; background: #0d1117; border: 1px solid #21262d;
+      border-radius: 8px; padding: 14px 12px 10px; box-sizing: border-box; position: relative;
+      display: flex; flex-direction: column; overflow: hidden; }
+    .cols { flex: 1; display: flex; min-height: 0; }
+    .panel { border: 1px solid #30363d; position: relative; padding: 10px 10px 6px; }
+    .panel .title { position: absolute; top: -11px; left: 8px; background: #0d1117; padding: 0 5px; }
+    .panel.todos { margin-left: 12px; width: 25%; }
+    .panel.chat { flex: 1; }
+    .ln { display: block; white-space: pre; }
+    .dim { color: #8b949e; }
+    .accent { color: #3b82f6; }
+    .green { color: #3fb950; }
+    .red { color: #f85149; }
+    .todo { display: block; white-space: nowrap; }
+    .input-box { margin-top: 10px; border: 1px solid #3b82f6; position: relative; padding: 5px 8px; min-height: 3.4em; }
+    .input-box .title { position: absolute; top: -11px; left: 8px; background: #0d1117; padding: 0 5px; }
+    .input-box.busy { border-color: #30363d; }
+    .capacity { color: #8b949e; margin-top: 5px; }
+    .status { color: #8b949e; margin-top: 5px; display: flex; justify-content: space-between; }
+    .pulse { animation: pulse 1.6s ease-in-out infinite alternate; }
+    @keyframes pulse { from { opacity: 1; } to { opacity: 0.45; } }
+    .overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; }
+    .modal { width: 80%; height: 62%; background: #000000; border: 1px solid #d29922; position: relative;
+      padding: 10px 14px; display: flex; flex-direction: column; }
+    .modal .title { position: absolute; top: -11px; left: 10px; background: #000000; padding: 0 5px; }
+    .modal .summary { color: #d29922; }
+    .modal .body { flex: 1; overflow: hidden; }
+    .keys { color: #8b949e; }
+  ]]></style>
+  <foreignObject x="0" y="0" width="992" height="640">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="root">
+      <div class="screen">
+        <div class="cols">
+          <div class="panel chat">
+            <span class="title"> 对话 </span>
+            <span class="ln">好的,我先给正文加上折行,避免超宽内容被截断。</span>
+          </div>
+          <div class="panel todos">
+            <span class="title"> 待办 </span>
+            <span class="todo accent">◐ 正文按显示高度折行</span>
+          </div>
+        </div>
+        <div class="input-box busy">
+          <span class="title"> 输入(Enter 提交,Ctrl+C 中断/退出) </span><span class="accent">› </span>
+        </div>
+        <div class="capacity">上下文 9600/64000 tokens(15%)</div>
+        <div class="status"><span class="pulse">等待确认…</span><span>输入 5120 · 输出 386 · 缓存命中 4800</span></div>
+        <div class="overlay">
+          <div class="modal">
+            <span class="title"> 确认操作 [file_edit] </span>
+            <div class="body">
+              <span class="ln summary">编辑文件: lex-cli/src/tui/draw.rs</span>
+              <span class="ln"> </span>
+              <span class="ln accent">文件: lex-cli/src/tui/draw.rs</span>
+              <span class="ln dim">  use ratatui::widgets::Paragraph;</span>
+              <span class="ln dim">  </span>
+              <span class="ln red">- use ratatui::widgets::Paragraph;</span>
+              <span class="ln green">+ use ratatui::widgets::{Paragraph, Wrap};</span>
+              <span class="ln dim">  </span>
+              <span class="ln dim">  f.render_widget(Paragraph::new(lines), inner);</span>
+              <span class="ln green">+ f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);</span>
+            </div>
+            <span class="ln keys">[y] 允许 · [n/Esc] 拒绝 · PgUp/PgDn 滚动 3/12</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </foreignObject>
+</svg>

@@ -32,19 +32,19 @@ Lex Code 把"给一个任务、看着它自己干活"的 agent 体验完整搬�
 
 ## 界面预览
 
-以下为 TUI 界面原型图(配色与文案对齐 `lex-cli/src/tui/` 实际渲染;源文件 [`docs/assets/tui-prototype.html`](docs/assets/tui-prototype.html))。
+以下为 TUI 界面原型图,以 SVG 内嵌 HTML 直接渲染(配色与文案对齐 `lex-cli/src/tui/` 实际渲染,输入光标在闪烁;交互源文件 [`docs/assets/tui-prototype.html`](docs/assets/tui-prototype.html))。
 
 **主界面** — 盒式字符 banner、markdown 对话渲染、待办面板三态图标(◉ 完成 / ◐ 进行中 / ○ 待办)、斜杠命令补全、上下文容量行与缓存命中状态:
 
-![TUI 主界面](docs/assets/tui-main.png)
+![TUI 主界面](docs/assets/tui-main.svg)
 
 **权限确认弹层** — `file_edit` 展示带色 diff(增行绿 / 删行红),`bash_exec` 展示命令原文;禁止"是否继续?"式笼统确认:
 
-![权限确认弹层](docs/assets/tui-confirm.png)
+![权限确认弹层](docs/assets/tui-confirm.svg)
 
 **`/settings` 设置页** — 模型与 Provider / 权限与安全 / 上下文与压缩 / 外观·日志·关于 四大模块,字段编辑后写回 `lex-code.toml` 并热生效(provider 重建、安全规则与上下文限制即时切换):
 
-![设置页](docs/assets/tui-settings.png)
+![设置页](docs/assets/tui-settings.svg)
 
 ## 架构
 
@@ -234,7 +234,7 @@ cargo test -p lex-core        # 仅核心库
 lex-core/src/    核心库:message / provider / agent / tools / security / context / config / prompt
 lex-cli/src/     终端 UI:main / confirm / ui(theme/banner/input/markdown/events/settings) / tui(...)
 assets/          运行时系统提示词(外部资源,不硬编码进代码)
-docs/assets/     界面原型图源文件与图片(tui-prototype.html + PNG)
+docs/assets/     界面原型图源文件与图片(tui-prototype.html + 动效 SVG)
 examples/smoke/  真实 API 冒烟步骤与联调结论
 ```
 

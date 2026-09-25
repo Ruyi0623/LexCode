@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="992" height="701" viewBox="0 0 992 701">
+  <title>Lex Code TUI 原型 — 主界面</title>
+  <style><![CDATA[
+    .root { width: 992px; height: 701px; background: #0d1117; color: #c9d1d9;
+      font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Noto Sans Mono CJK SC", monospace;
+      font-size: 14px; line-height: 1.55; }
+    .screen { width: 992px; height: 701px; background: #0d1117; border: 1px solid #21262d;
+      border-radius: 8px; padding: 14px 12px 10px; box-sizing: border-box; position: relative;
+      display: flex; flex-direction: column; overflow: hidden; }
+    .cols { flex: 1; display: flex; min-height: 0; }
+    .panel { border: 1px solid #30363d; position: relative; padding: 10px 10px 6px; }
+    .panel .title { position: absolute; top: -11px; left: 8px; background: #0d1117; padding: 0 5px; }
+    .panel.todos { margin-left: 12px; width: 25%; }
+    .panel.chat { flex: 1; }
+    .ln { display: block; white-space: pre; }
+    .user .prompt { color: #3b82f6; font-weight: 700; }
+    .tool { padding-left: 2ch; }
+    .tool .dot { color: #3b82f6; }
+    .res { color: #8b949e; padding-left: 2ch; }
+    .dim { color: #8b949e; }
+    .accent { color: #3b82f6; }
+    .green { color: #3fb950; }
+    .sep { color: #21262d; }
+    .md-h { font-weight: 700; }
+    .md-b { font-weight: 700; }
+    .md-code { color: #56d4dd; background: #152238; border-radius: 3px; padding: 0 3px; }
+    .md-fence { display: block; white-space: pre; color: #8b949e; background: #152238;
+      border-left: 2px solid #3b82f6; padding: 3px 10px; margin: 3px 0; border-radius: 0 4px 4px 0; }
+    .banner { color: #3b82f6; font-weight: 700; line-height: 1; white-space: pre;
+      font-family: Consolas, "Cascadia Mono", monospace; letter-spacing: -1px; }
+    .todo { display: block; white-space: nowrap; }
+    .todo + .todo { margin-top: 2px; }
+    .input-box { margin-top: 10px; border: 1px solid #3b82f6; position: relative; padding: 5px 8px; min-height: 3.4em; }
+    .input-box .title { position: absolute; top: -11px; left: 8px; background: #0d1117; padding: 0 5px; }
+    .capacity { color: #8b949e; margin-top: 5px; }
+    .completion { margin-top: 4px; }
+    .completion .hint { color: #8b949e; }
+    .status { color: #8b949e; margin-top: 5px; display: flex; justify-content: space-between; }
+    .cursor { background: #c9d1d9; color: #0d1117; animation: blink 1.1s steps(1) infinite; }
+    @keyframes blink { 50% { background: transparent; color: #c9d1d9; } }
+  ]]></style>
+  <foreignObject x="0" y="0" width="992" height="701">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="root">
+      <div class="screen">
+        <div class="cols">
+          <div class="panel chat">
+            <span class="title"> 对话 </span>
+            <span class="banner">██╗     ███████╗██╗  ██╗     ██████╗ ██████╗ ██████╗ ███████╗
+██║     ██╔════╝╚██╗██╔╝    ██╔════╝██╔═══██╗██╔══██╗██╔════╝
+██║     █████╗   ╚███╔╝     ██║     ██║   ██║██║  ██║█████╗
+██║     ██╔══╝   ██╔██╗     ██║     ██║   ██║██║  ██║██╔══╝
+███████╗███████╗██╔╝ ██╗    ╚██████╗╚██████╔╝██████╔╝███████╗
+╚══════╝╚══════╝╚═╝  ╚═╝     ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝</span>
+            <span class="ln dim">v0.1.0</span>
+            <span class="ln"><span class="accent">●</span> provider: openai · model: deepseek-chat</span>
+            <span class="ln"><span class="accent">●</span> 目录: D:\项目\lexcode · Rust</span>
+            <span class="ln dim">? Ctrl+C 清空/退出 · Ctrl+D 退出 · ↑↓ 翻历史</span>
+            <span class="ln sep">──────────────────────────────────────────────────────────────────────────────</span>
+            <span class="ln user" style="margin-top:4px"><span class="prompt">› </span>给待办面板加上三态图标,跑通测试后总结改动</span>
+            <span class="ln">好的,我来处理。计划如下:</span>
+            <span class="ln md-h" style="margin-top:3px">改动方案</span>
+            <span class="ln"><span class="accent">•</span> <span class="md-code">tui/draw.rs</span> 待办行改自绘三态:<span class="md-b">◉</span> 完成 / <span class="md-b">◐</span> 进行中 / <span class="md-b">○</span> 待办</span>
+            <span class="ln"><span class="accent">•</span> 图标与内容固定同行,续行悬挂缩进,避免行尾图标折成孤行</span>
+            <span class="md-fence">cargo test --workspace
+249 passed · 0 failed</span>
+            <span class="ln tool"><span class="dot">●</span> bash_exec(cargo test --workspace)</span>
+            <span class="ln res">⎿ 249 passed · 0 failed</span>
+            <span class="ln tool dim">  ⤷ [子1] 派生 · 汇总测试输出里的失败用例</span>
+            <span class="ln" style="margin-top:2px">三态图标已生效,<span class="md-b">249</span> 个测试全部通过。</span>
+          </div>
+          <div class="panel todos">
+            <span class="title"> 待办 </span>
+            <span class="todo green">◉ 读 theme.rs 色板</span>
+            <span class="todo accent">◐ 待办行改三态自绘图标</span>
+            <span class="todo dim">○ 汇总改动写入提交说明</span>
+          </div>
+        </div>
+        <div class="input-box">
+          <span class="title"> 输入(Enter 提交,Ctrl+C 中断/退出) </span><span class="accent">› </span>/<span class="cursor">&#160;</span>
+        </div>
+        <div class="capacity">上下文 20800/64000 tokens(32%)</div>
+        <div class="completion"><span class="ln"><span class="accent" style="font-weight:700">/settings</span>  <span class="dim">/compact</span>  <span class="dim">/init</span></span>
+        <span class="ln hint">↑/↓ 选择 · Tab 补全 · Enter 执行</span></div>
+        <div class="status"><span>就绪</span><span>输入 25482 · 输出 6120 · 缓存命中 91%</span></div>
+      </div>
+    </div>
+  </foreignObject>
+</svg>
