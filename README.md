@@ -234,11 +234,9 @@ cargo test -p lex-core        # 仅核心库
 lex-core/src/    核心库:message / provider / agent / tools / security / context / config / prompt
 lex-cli/src/     终端 UI:main / confirm / ui(theme/banner/input/markdown/events/settings) / tui(...)
 assets/          运行时系统提示词(外部资源,不硬编码进代码)
-docs/            设计文档、需求任务书、界面原型图源文件与图片
+docs/assets/     界面原型图源文件与图片(tui-prototype.html + PNG)
 examples/smoke/  真实 API 冒烟步骤与联调结论
 ```
-
-深入设计:`docs/superpowers/specs/2026-09-12-lex-code-design.md`(权威设计文档)、`docs/requirements/harness-dev-brief-for-claude-code.md`(原始需求任务书)。
 
 ## 当前状态与路线图
 

@@ -1,2 +1,8 @@
 /target
 Cargo.lock.bak
+
+# 内部文档不入库(本地保留)
+/AGENTS.md
+/CLAUDE.md
+/docs/requirements/
+/docs/superpowers/
