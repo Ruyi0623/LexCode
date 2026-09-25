@@ -245,3 +245,7 @@ examples/smoke/  真实 API 冒烟步骤与联调结论
 已完成:Phase 1 MVP 闭环(Anthropic 端点)→ Phase 2 Provider 泛化(DeepSeek 真实冒烟,缓存命中 97%)→ Phase 3 grep/todo、三级权限、只读并发 → Phase 4 AGENTS.md 注入、上下文压缩、前缀缓存遥测 → Phase 5 错误边界与可观测性 → Phase 6 子 agent 派生机制 + ratatui TUI → `/settings` 设置页全功能(REPL 只读 + TUI 编辑写回热生效)。
 
 明确不做:GUI / IDE 插件、多用户协作 / 服务化、CI/CD 集成。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 Ruyi
