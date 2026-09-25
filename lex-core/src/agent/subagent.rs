@@ -1,7 +1,7 @@
-use crate::agent::{ChildEvent, ChildEventKind, SubagentHooks};
+use crate::agent::{ChildEvent, ChildEventKind, SharedHandler, SubagentHooks};
 use crate::error::{LexError, Result};
 use crate::provider::throttle::ThrottledProvider;
-use crate::security::{PermissionHandler, SecurityGuard, SecurityRules};
+use crate::security::{SecurityGuard, SecurityRules};
 use crate::tools::{ShellCommand, SubagentRequest, SubagentSpawner, ToolContext, ToolRegistry};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -110,7 +110,7 @@ impl SpawnState {
 pub struct SubagentRuntime {
     provider: ThrottledProvider,
     base_system: String,
-    handler: Arc<dyn PermissionHandler>,
+    handler: SharedHandler,
     rules: SecurityRules,
     cwd: PathBuf,
     shell: Option<ShellCommand>,
@@ -132,7 +132,7 @@ impl SubagentRuntime {
     pub fn new(
         provider: ThrottledProvider,
         base_system: String,
-        handler: Arc<dyn PermissionHandler>,
+        handler: SharedHandler,
         rules: SecurityRules,
         cwd: PathBuf,
         shell: Option<ShellCommand>,
@@ -148,7 +148,7 @@ impl SubagentRuntime {
     pub(crate) fn with_depth(
         provider: ThrottledProvider,
         base_system: String,
-        handler: Arc<dyn PermissionHandler>,
+        handler: SharedHandler,
         rules: SecurityRules,
         cwd: PathBuf,
         shell: Option<ShellCommand>,
@@ -275,7 +275,7 @@ impl SubagentSpawner for SubagentRuntime {
         let mut child = crate::agent::AgentLoop {
             provider: Box::new(self.provider.clone()),
             registry: child_registry,
-            handler: Box::new(self.handler.clone()),
+            handler: self.handler.clone(),
             tool_ctx: ToolContext { cwd: self.cwd.clone(), shell: self.shell.clone(), todos: Arc::new(Mutex::new(Vec::new())), spawner: nested_spawner },
             security: SecurityGuard::new(self.rules.clone()),
             system: compose_subagent_system(&self.base_system, &subagent_system_suffix(&req.task, &allowed)),
@@ -452,7 +452,7 @@ mod tests {
         SubagentRuntime::with_depth(
             throttled,
             "主提示词前缀".into(),
-            Arc::new(AllowHandler),
+            SharedHandler::new(Arc::new(AllowHandler)),
             crate::security::SecurityRules::defaults(),
             std::path::PathBuf::from("."),
             None,
@@ -744,7 +744,7 @@ mod tests {
         SubagentRuntime::with_depth(
             throttled,
             "主提示词前缀".into(),
-            Arc::new(AllowHandler),
+            SharedHandler::new(Arc::new(AllowHandler)),
             crate::security::SecurityRules::defaults(),
             std::path::PathBuf::from("."),
             None,
@@ -773,7 +773,7 @@ mod tests {
         SubagentRuntime::with_depth(
             throttled,
             "主提示词前缀".into(),
-            Arc::new(AllowHandler),
+            SharedHandler::new(Arc::new(AllowHandler)),
             crate::security::SecurityRules::defaults(),
             std::path::PathBuf::from("."),
             None,
@@ -947,7 +947,7 @@ mod tests {
         let rt = SubagentRuntime::with_depth(
             crate::provider::throttle::ThrottledProvider::new(Arc::new(provider.clone()), 3),
             "主提示词前缀".into(),
-            Arc::new(AllowHandler),
+            SharedHandler::new(Arc::new(AllowHandler)),
             crate::security::SecurityRules::defaults(),
             std::path::PathBuf::from("."),
             None,

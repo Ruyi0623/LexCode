@@ -66,10 +66,49 @@ pub fn first_line_of(content: &str) -> String {
     content.lines().next().unwrap_or_default().chars().take(160).collect()
 }
 
+/// 可热替换的共享权限 handler:主循环与整棵子 agent 树共用同一槽位。
+///
+/// 为什么不是直接传 `Arc<dyn PermissionHandler>`:子 agent 树在 build 期固化 handler 后,
+/// TUI 等宿主在运行期替换 handler(如把 stdin 确认换成弹层)只改得到主循环,
+/// 子 agent 仍拿旧 handler——TUI raw mode 下 stdin 读行永远等不到换行,确认直接卡死。
+/// 槽位化后 `set()` 一次,主循环与所有后代同步生效。
+#[derive(Clone)]
+pub struct SharedHandler {
+    inner: Arc<std::sync::RwLock<Arc<dyn PermissionHandler>>>,
+}
+
+impl SharedHandler {
+    pub fn new(handler: Arc<dyn PermissionHandler>) -> Self {
+        SharedHandler { inner: Arc::new(std::sync::RwLock::new(handler)) }
+    }
+
+    /// 运行期替换当前 handler(主循环与整棵子 agent 树同步生效)
+    pub fn set(&self, handler: Arc<dyn PermissionHandler>) {
+        if let Ok(mut slot) = self.inner.write() {
+            *slot = handler;
+        }
+    }
+
+    fn current(&self) -> Arc<dyn PermissionHandler> {
+        // 锁中毒时取回内部值继续用:handler 本身无不变量可破坏,恢复优于 panic
+        match self.inner.read() {
+            Ok(slot) => Arc::clone(&slot),
+            Err(poisoned) => Arc::clone(&poisoned.into_inner()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl PermissionHandler for SharedHandler {
+    async fn confirm(&self, action: &crate::security::PendingAction) -> crate::error::Result<bool> {
+        self.current().confirm(action).await
+    }
+}
+
 pub struct AgentLoop {
     pub provider: Box<dyn Provider>,
     pub registry: ToolRegistry,
-    pub handler: Box<dyn PermissionHandler>,
+    pub handler: SharedHandler,
     pub tool_ctx: ToolContext,
     pub security: SecurityGuard,
     pub system: String,
@@ -189,7 +228,7 @@ impl AgentLoop {
                 });
                 if all_parallel && tool_uses.len() > 1 {
                     let blocks = futures::future::join_all(tool_uses.iter().map(|(id, name, input)| {
-                        execute_tool_call(&self.registry, self.handler.as_ref(), &self.tool_ctx, &self.security, id, name, input.clone())
+                        execute_tool_call(&self.registry, &self.handler, &self.tool_ctx, &self.security, id, name, input.clone())
                     }))
                     .await;
                     for ((id, _, _), block) in tool_uses.iter().zip(blocks) {
@@ -200,7 +239,7 @@ impl AgentLoop {
                     self.notify_results(&tool_uses, &results);
                 } else {
                     for (id, name, input) in &tool_uses {
-                        let block = execute_tool_call(&self.registry, self.handler.as_ref(), &self.tool_ctx, &self.security, id, name, input.clone()).await;
+                        let block = execute_tool_call(&self.registry, &self.handler, &self.tool_ctx, &self.security, id, name, input.clone()).await;
                         if let Block::ToolResult { content, is_error, .. } = block {
                             results.push((id.as_str(), content, is_error));
                         }
@@ -262,6 +301,40 @@ impl AgentLoop {
 
     /// 上下文压缩:本地估算(字符÷4)跨过 `limit × 0.8` 时,对早期历史生成一次摘要。
     /// 会话内只触发一次;失败降级为保留原历史并记 warning,不影响本轮任务。
+    /// 手动触发上下文压缩(/compact):与自动压缩共用同一切分与摘要逻辑,
+    /// 但不受阈值与"会话内只自动一次"限制(用户显式要求即执行);
+    /// 成功后同样置位 compress_attempted 并失效缓存基线,摘要并入下一条用户消息。
+    pub async fn compact_now(&mut self) -> Result<String> {
+        if self.context_limit.is_none() {
+            return Ok("上下文压缩未启用([context] enabled = false),无需压缩。".into());
+        }
+        let Some(cut) = compress::find_cut_index(&self.history) else {
+            return Ok("当前历史还没有可安全切分的完整轮次,暂无需压缩。".into());
+        };
+        let estimate = compress::estimate_tokens(&self.history);
+        let early: Vec<Message> = self.history.drain(..cut).collect();
+        match compress::summarize(self.provider.as_ref(), &early).await {
+            Ok(summary) => {
+                let kept = self.history.len();
+                self.compress_attempted = true;
+                self.pending_summary = Some(summary.clone());
+                // 压缩改写了历史前缀:缓存链断开(仅遥测,无恢复逻辑)
+                if let Some(cache) = &self.cache_strategy {
+                    cache.invalidate();
+                }
+                Ok(format!(
+                    "已压缩:原历史估算 {estimate} tokens,摘要 {} 字符,保留最近 {kept} 条消息;摘要将并入你下一条消息。",
+                    summary.chars().count()
+                ))
+            }
+            Err(e) => {
+                // 摘要失败回填原历史,不上抛丢历史
+                self.history.splice(..0, early);
+                Err(e)
+            }
+        }
+    }
+
     async fn maybe_compress(&mut self) {
         if self.compress_attempted {
             return;
@@ -319,7 +392,7 @@ mod hooks {
         AgentLoop {
             provider: Box::new(NoopProvider),
             registry: crate::tools::ToolRegistry::new(),
-            handler: Box::new(NoopHandler),
+            handler: SharedHandler::new(Arc::new(NoopHandler)),
             tool_ctx: crate::tools::ToolContext {
                 cwd: std::path::PathBuf::from("."),
                 shell: None,

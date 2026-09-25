@@ -73,7 +73,7 @@ fn make_loop(
     AgentLoop {
         provider: Box::new(mock),
         registry: ToolRegistry::new(),
-        handler: Box::new(AllowAll),
+        handler: lex_core::agent::SharedHandler::new(Arc::new(AllowAll)),
         tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default(), spawner: None },
         security: SecurityGuard::new(SecurityRules::defaults()),
         system: String::new(),

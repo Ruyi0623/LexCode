@@ -67,7 +67,7 @@ fn build_loop(
     AgentLoop {
         provider: Box::new(provider),
         registry,
-        handler: Box::new(YesHandler),
+        handler: lex_core::agent::SharedHandler::new(Arc::new(YesHandler)),
         tool_ctx: ToolContext { cwd: std::path::PathBuf::from("."), shell: None, todos, spawner: Some(spawner) },
         security: SecurityGuard::new(rules),
         system: "主提示词".into(),
@@ -114,10 +114,11 @@ async fn main_loop_delegates_and_keeps_only_summary() {
     registry.register(Box::new(FileRead));
     registry.register(Box::new(SpawnSubagent::new(4)));
     let todos: Arc<Mutex<Vec<Todo>>> = Default::default();
+    let shared = lex_core::agent::SharedHandler::new(Arc::new(YesHandler));
     let spawner: Arc<dyn SubagentSpawner> = Arc::new(lex_core::agent::subagent::SubagentRuntime::new(
         throttled.clone(),
         "主提示词".into(),
-        Arc::new(YesHandler),
+        shared.clone(),
         SecurityRules::defaults(),
         std::path::PathBuf::from("."),
         None,
@@ -202,7 +203,7 @@ async fn forbidden_rule_still_blocks_inside_child_agent() {
     let spawner: Arc<dyn SubagentSpawner> = Arc::new(lex_core::agent::subagent::SubagentRuntime::new(
         throttled.clone(),
         "主提示词".into(),
-        Arc::new(YesHandler),
+        lex_core::agent::SharedHandler::new(Arc::new(YesHandler)),
         rules.clone(),
         std::path::PathBuf::from("."),
         None,
@@ -259,4 +260,67 @@ async fn forbidden_rule_still_blocks_inside_child_agent() {
         .expect("子 agent 的 bash_exec 必须产生结果回调(证明工具真的被子 agent 调用了)");
     assert!(is_error, "Forbidden 命中应回填错误 ToolResult,实际首行: {first_line}");
     assert!(first_line.contains("Forbidden"), "拦截应来自 Forbidden 规则,实际首行: {first_line}");
+}
+
+/// 回归:运行期热替换共享 handler 后,子 agent 的确认必须走新 handler。
+///
+/// 曾以 `Arc<dyn PermissionHandler>` 在 build 期固化:TUI 把 stdin 确认换成弹层时
+/// 只改得到主循环,子 agent 仍拿 stdin handler——raw mode 下读行永远等不到换行,
+/// 一派子 agent 就卡死。修复 = SharedHandler 槽位,`set()` 对主循环与所有后代生效。
+#[tokio::test]
+async fn handler_slot_swap_reaches_child_agent() {
+    struct CountingHandler {
+        calls: Arc<Mutex<usize>>,
+    }
+    #[async_trait::async_trait]
+    impl PermissionHandler for CountingHandler {
+        async fn confirm(&self, _: &PendingAction) -> Result<bool> {
+            *self.calls.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+            Ok(true)
+        }
+    }
+
+    let provider = ScriptedProvider::default();
+    let throttled = ThrottledProvider::new(Arc::new(provider.clone()), 3);
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(BashExec));
+    registry.register(Box::new(SpawnSubagent::new(4)));
+    let todos: Arc<Mutex<Vec<Todo>>> = Default::default();
+    // 与生产 lex-cli build_loop 同形:同一槽位 clone 给派生器与主循环
+    let shared = lex_core::agent::SharedHandler::new(Arc::new(YesHandler));
+    let spawner: Arc<dyn SubagentSpawner> = Arc::new(lex_core::agent::subagent::SubagentRuntime::new(
+        throttled.clone(),
+        "主提示词".into(),
+        shared.clone(),
+        SecurityRules::defaults(),
+        std::path::PathBuf::from("."),
+        None,
+        Arc::new(registry),
+        lex_core::agent::subagent::SpawnLimits { max_turns: 10, context_limit: Some(64_000), max_children_per_turn: 4 },
+        lex_core::agent::SubagentHooks { on_child_event: None },
+    ));
+
+    // 父:派生只授权 bash_exec 的子 agent
+    provider.push(tool_use("t1", "spawn_subagent", serde_json::json!({"task":"跑一条命令","allowed_tools":["bash_exec"]})));
+    // 子第 1 轮:bash_exec 默认 Confirm 级 → 确认请求应抵达替换后的 handler
+    provider.push(tool_use("c1", "bash_exec", serde_json::json!({"command":"echo lex_handler_slot_probe"})));
+    // 子第 2 轮:收尾摘要;父第 2 轮:收尾
+    provider.push(text_reply("## 子任务摘要\n- **做了什么**:执行命令\n- **关键结论**:完成\n- **修改的文件**:无"));
+    provider.push(text_reply("子 agent 已回报。"));
+
+    let mut loop_registry = ToolRegistry::new();
+    loop_registry.register(Box::new(BashExec));
+    loop_registry.register(Box::new(SpawnSubagent::new(4)));
+    let mut agent = build_loop(throttled, loop_registry, SecurityRules::defaults(), spawner, todos, None);
+
+    // 关键动作:派生前热替换槽位 —— 修复前子 agent 拿不到这次替换
+    let calls: Arc<Mutex<usize>> = Default::default();
+    agent.handler.set(Arc::new(CountingHandler { calls: calls.clone() }));
+
+    let final_text = agent.run_turn("验证 handler 槽位", &mut |_| {}).await.unwrap();
+    assert!(final_text.contains("已回报"), "主循环应正常收尾,实际: {final_text}");
+    assert!(
+        *calls.lock().unwrap_or_else(|p| p.into_inner()) >= 1,
+        "子 agent 的 bash_exec 确认必须走热替换后的 handler(0 次说明子 agent 仍固化旧 handler)"
+    );
 }

@@ -61,7 +61,7 @@ async fn two_turn_loop_reads_then_answers() {
     let mut loop_ = AgentLoop {
         provider: Box::new(mock),
         registry: ToolRegistry::new(),
-        handler: Box::new(AllowAll),
+        handler: lex_core::agent::SharedHandler::new(Arc::new(AllowAll)),
         tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default(), spawner: None },
         security: SecurityGuard::new(SecurityRules::defaults()),
         system: "sys".into(),
@@ -122,7 +122,7 @@ async fn denied_tool_result_feeds_back_and_model_can_finish() {
     let mut loop_ = AgentLoop {
         provider: Box::new(mock),
         registry: ToolRegistry::new(),
-        handler: Box::new(Deny),
+        handler: lex_core::agent::SharedHandler::new(Arc::new(Deny)),
         tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default(), spawner: None },
         security: SecurityGuard::new(SecurityRules::defaults()),
         system: String::new(),
@@ -154,7 +154,7 @@ async fn max_turns_exceeded_is_error() {
     let mut loop_ = AgentLoop {
         provider: Box::new(mock),
         registry: ToolRegistry::new(),
-        handler: Box::new(AllowAll),
+        handler: lex_core::agent::SharedHandler::new(Arc::new(AllowAll)),
         tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default(), spawner: None },
         security: SecurityGuard::new(SecurityRules::defaults()),
         system: String::new(),
@@ -195,7 +195,7 @@ fn slow_loop(scripts: Vec<Vec<ProviderEvent>>) -> AgentLoop {
     AgentLoop {
         provider: Box::new(MockProvider::new(scripts)),
         registry: ToolRegistry::new(),
-        handler: Box::new(AllowAll),
+        handler: lex_core::agent::SharedHandler::new(Arc::new(AllowAll)),
         tool_ctx: ToolContext { cwd: PathBuf::from("."), shell: None, todos: Default::default(), spawner: None },
         security: SecurityGuard::new(SecurityRules::defaults()),
         system: String::new(),
@@ -311,7 +311,7 @@ async fn run_turn_signals_spawner_begin_turn() {
     let mut loop_ = AgentLoop {
         provider: Box::new(mock),
         registry: ToolRegistry::new(),
-        handler: Box::new(AllowAll),
+        handler: lex_core::agent::SharedHandler::new(Arc::new(AllowAll)),
         tool_ctx: ToolContext {
             cwd: PathBuf::from("."),
             shell: None,
