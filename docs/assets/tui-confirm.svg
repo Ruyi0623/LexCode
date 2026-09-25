@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="992" height="640" viewBox="0 0 992 640">
+<svg xmlns="http://www.w3.org/2000/svg" width="1012" height="660" viewBox="0 0 1012 660">
   <title>Lex Code TUI 原型 — 权限确认弹层</title>
   <style><![CDATA[
-    .root { width: 992px; height: 640px; background: #0d1117; color: #c9d1d9;
+    .root { width: 1012px; height: 660px; background: transparent; padding: 10px; box-sizing: border-box; color: #c9d1d9;
       font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Noto Sans Mono CJK SC", monospace;
       font-size: 14px; line-height: 1.55; }
     .screen { width: 992px; height: 640px; background: #0d1117; border: 1px solid #21262d;
@@ -34,7 +34,8 @@
     .modal .body { flex: 1; overflow: hidden; }
     .keys { color: #8b949e; }
   ]]></style>
-  <foreignObject x="0" y="0" width="992" height="640">
+  <rect x="0.5" y="0.5" width="1011" height="659" rx="12" fill="#161b22" stroke="#21262d"/>
+  <foreignObject x="0" y="0" width="1012" height="660">
     <div xmlns="http://www.w3.org/1999/xhtml" class="root">
       <div class="screen">
         <div class="cols">
