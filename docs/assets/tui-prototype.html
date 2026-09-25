@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Lex Code TUI 原型图源文件</title>
+<!--
+  README 原型图的制作源文件(纯静态,无依赖)。
+  用法:本地起 HTTP 服务后打开 ?screen=1|2|3 单屏截图(见 examples/smoke 或 README 截图流程)。
+  配色与 lex-cli/src/ui/theme.rs 的 C_* 常量同源;文案对齐 tui/draw.rs 与 ui/settings.rs 实际渲染。
+-->
+<style>
+  :root {
+    --bg: #0d1117;        /* 终端底色 */
+    --fg: #c9d1d9;
+    --accent: #3b82f6;    /* C_ACCENT 蓝 */
+    --error: #f85149;     /* C_ERROR Red */
+    --warn: #d29922;      /* C_WARN Yellow */
+    --success: #3fb950;   /* C_SUCCESS Green */
+    --dim: #8b949e;       /* C_DIM DarkGray */
+    --code: #56d4dd;      /* C_CODE 亮青 */
+    --border: #30363d;    /* 面板边框 */
+    --modal-bg: #000000;  /* C_BG_MODAL 弹层黑底 */
+    --code-bg: #152238;   /* C_CODE_BG 代码底色(theme.rs 原值) */
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: #161b22; color: var(--fg); margin: 0; padding: 32px;
+    font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Noto Sans Mono CJK SC", monospace;
+    font-size: 14px; line-height: 1.55;
+  }
+  h1 { font-size: 15px; color: var(--dim); font-weight: normal; margin: 0 0 8px; }
+  h1 b { color: var(--fg); }
+  .label { color: var(--dim); margin: 28px 0 8px; }
+
+  /* 一块"终端屏幕":100×30 字符格的近似呈现 */
+  .screen {
+    width: 992px; min-height: 640px; background: var(--bg);
+    border: 1px solid #21262d; border-radius: 8px;
+    padding: 14px 12px 10px; display: flex; flex-direction: column;
+    box-shadow: 0 10px 28px rgba(0,0,0,.5);
+    overflow: hidden;
+  }
+
+  /* 上部双栏:对话 75% + 待办 25%(draw.rs 的 cols 布局) */
+  .cols { flex: 1; display: flex; min-height: 0; }
+  .panel { border: 1px solid var(--border); position: relative; padding: 10px 10px 6px; }
+  .panel .title {
+    position: absolute; top: -11px; left: 8px; background: var(--bg);
+    padding: 0 5px; color: var(--fg);
+  }
+  .panel.todos { margin-left: 12px; width: 25%; }
+  .panel.chat { flex: 1; }
+
+  .ln { display: block; white-space: pre; }
+  .user > .prompt { color: var(--accent); font-weight: 700; }
+  .tool { padding-left: 2ch; }
+  .tool .dot { color: var(--accent); }
+  .res { color: var(--dim); padding-left: 2ch; }
+  .res .mark { color: var(--dim); }
+  .dim { color: var(--dim); }
+  .accent { color: var(--accent); }
+  .green { color: var(--success); }
+  .cursor { background: var(--fg); color: var(--bg); }
+
+  /* —— markdown 呈现(对齐 tui/markdown.rs:标题加粗、列表蓝点、围栏变暗带底色、行内代码亮青) —— */
+  .md-h { font-weight: 700; }
+  .md-code { color: var(--code); background: var(--code-bg); border-radius: 3px; padding: 0 3px; }
+  .md-fence {
+    display: block; white-space: pre; color: var(--dim);
+    background: var(--code-bg); border-left: 2px solid var(--accent);
+    padding: 3px 10px; margin: 3px 0; border-radius: 0 4px 4px 0;
+  }
+  .md-b { font-weight: 700; }
+
+  /* —— banner(banner.rs 的盒式字符画) —— */
+  .banner { color: var(--accent); font-weight: 700; line-height: 1; white-space: pre; font-family: Consolas, "Cascadia Mono", monospace; letter-spacing: -1px; }
+  .sep { color: #21262d; }
+
+  /* 待办面板:◉ 完成 / ◐ 进行中 / ○ 待办(与 tui/draw.rs 同字形) */
+  .todo { display: block; white-space: nowrap; }
+  .todo + .todo { margin-top: 2px; }
+
+  /* 底部栈:输入盒 → 上下文容量行 → 补全菜单 → 状态行 */
+  .input-box { margin-top: 10px; border: 1px solid var(--accent); position: relative; padding: 5px 8px; min-height: 3.4em; }
+  .input-box .title { position: absolute; top: -11px; left: 8px; background: var(--bg); padding: 0 5px; }
+  .input-box.busy { border-color: var(--border); }
+  .capacity { color: var(--dim); margin-top: 5px; }
+  .capacity.warn { color: var(--warn); }
+  .completion { margin-top: 4px; }
+  .completion .hint { color: var(--dim); }
+  .status { color: var(--dim); margin-top: 5px; display: flex; justify-content: space-between; }
+
+  /* 权限确认弹层:80% × 60% 居中,黑底压住下层,黄边框 */
+  .screen-wrap { position: relative; }
+  .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .modal {
+    width: 80%; height: 62%; background: var(--modal-bg);
+    border: 1px solid var(--warn); position: relative; padding: 10px 14px;
+    display: flex; flex-direction: column;
+  }
+  .modal .title { position: absolute; top: -11px; left: 10px; background: var(--modal-bg); padding: 0 5px; }
+  .modal .summary { color: var(--warn); }
+  .modal .body { flex: 1; overflow: hidden; }
+  .add { color: var(--success); }
+  .del { color: var(--error); }
+  .keys { color: var(--dim); }
+  .keys .sep { color: var(--dim); }
+
+  /* 设置页(模块 0 详情 + 字段编辑态) */
+  .settings { flex: 1; padding: 10px 12px; }
+  .set-head { color: var(--accent); font-weight: 700; margin-bottom: 8px; }
+  .field { display: flex; white-space: pre; }
+  .field .k { color: var(--dim); width: 44ch; flex: 0 0 auto; }
+  .field.sel .k, .field.sel .v { color: var(--accent); font-weight: 700; }
+  .set-note { color: var(--dim); margin-top: 10px; }
+
+  /* 截图模式:?screen=N 时只留对应画面,去留白 */
+  body.shot { padding: 0; background: var(--bg); }
+  body.shot .page-title, body.shot .label { display: none; }
+  body.shot .scene { margin: 0 !important; }
+</style>
+</head>
+<body>
+<h1 class="page-title">Lex Code <b>TUI 原型图</b> — 源文件(README 引用图为 ?screen=1/2/3 的视口截图)</h1>
+
+<!-- 画面一:主界面 -->
+<div class="scene" data-screen="1">
+<div class="label">画面一:主界面(banner · markdown 对话 · 待办面板 · 斜杠补全 · 上下文容量行)</div>
+<div class="screen">
+  <div class="cols">
+    <div class="panel chat">
+      <span class="title"> 对话 </span>
+      <span class="banner">██╗     ███████╗██╗  ██╗     ██████╗ ██████╗ ██████╗ ███████╗
+██║     ██╔════╝╚██╗██╔╝    ██╔════╝██╔═══██╗██╔══██╗██╔════╝
+██║     █████╗   ╚███╔╝     ██║     ██║   ██║██║  ██║█████╗
+██║     ██╔══╝   ██╔██╗     ██║     ██║   ██║██║  ██║██╔══╝
+███████╗███████╗██╔╝ ██╗    ╚██████╗╚██████╔╝██████╔╝███████╗
+╚══════╝╚══════╝╚═╝  ╚═╝     ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝</span>
+      <span class="ln dim">v0.1.0</span>
+      <span class="ln"><span class="accent">●</span> provider: openai · model: deepseek-chat</span>
+      <span class="ln"><span class="accent">●</span> 目录: D:\项目\lexcode · Rust</span>
+      <span class="ln dim">? Ctrl+C 清空/退出 · Ctrl+D 退出 · ↑↓ 翻历史</span>
+      <span class="ln sep">──────────────────────────────────────────────────────────────────────────────</span>
+      <span class="ln user" style="margin-top:4px"><span class="prompt">› </span>给待办面板加上三态图标,跑通测试后总结改动</span>
+      <span class="ln">好的,我来处理。计划如下:</span>
+      <span class="ln md-h" style="margin-top:3px">改动方案</span>
+      <span class="ln"><span class="accent">•</span> <span class="md-code">tui/draw.rs</span> 待办行改自绘三态:<span class="md-b">◉</span> 完成 / <span class="md-b">◐</span> 进行中 / <span class="md-b">○</span> 待办</span>
+      <span class="ln"><span class="accent">•</span> 图标与内容固定同行,续行悬挂缩进,避免行尾图标折成孤行</span>
+<span class="md-fence">cargo test --workspace
+249 passed · 0 failed</span>
+      <span class="ln tool"><span class="dot">●</span> bash_exec(cargo test --workspace)</span>
+      <span class="ln res"><span class="mark">⎿ </span>249 passed · 0 failed</span>
+      <span class="ln tool dim">  ⤷ [子1] 派生 · 汇总测试输出里的失败用例</span>
+      <span class="ln" style="margin-top:2px">三态图标已生效,249 个测试全部通过。</span>
+    </div>
+    <div class="panel todos">
+      <span class="title"> 待办 </span>
+      <span class="todo green">◉ 读 theme.rs 色板</span>
+      <span class="todo accent">◐ 待办行改三态自绘图标</span>
+      <span class="todo dim">○ 汇总改动写入提交说明</span>
+    </div>
+  </div>
+  <div class="input-box">
+    <span class="title"> 输入(Enter 提交,Ctrl+C 中断/退出) </span><span class="accent">› </span>/<span class="cursor">&nbsp;</span>
+  </div>
+  <div class="capacity">上下文 20800/64000 tokens(32%)</div>
+  <div class="completion"><span class="ln"><span class="accent" style="font-weight:700">/settings</span>  <span class="dim">/compact</span>  <span class="dim">/init</span></span>
+  <span class="ln hint">↑/↓ 选择 · Tab 补全 · Enter 执行</span></div>
+  <div class="status"><span>就绪</span><span>输入 25482 · 输出 6120 · 缓存命中 91%</span></div>
+</div>
+</div>
+
+<!-- 画面二:权限确认弹层 -->
+<div class="scene" data-screen="2">
+<div class="label">画面二:权限确认弹层(file_edit 带色 diff,黑底压住下层)</div>
+<div class="screen-wrap">
+<div class="screen">
+  <div class="cols">
+    <div class="panel chat">
+      <span class="title"> 对话 </span>
+      <span class="ln">好的,我先给正文加上折行,避免超宽内容被截断。</span>
+    </div>
+    <div class="panel todos">
+      <span class="title"> 待办 </span>
+      <span class="todo accent">◐ 正文按显示高度折行</span>
+    </div>
+  </div>
+  <div class="input-box busy">
+    <span class="title"> 输入(Enter 提交,Ctrl+C 中断/退出) </span><span class="accent">› </span>
+  </div>
+  <div class="capacity">上下文 9600/64000 tokens(15%)</div>
+  <div class="status"><span>等待确认…</span><span>输入 5120 · 输出 386 · 缓存命中 4800</span></div>
+  <div class="overlay">
+    <div class="modal">
+      <span class="title"> 确认操作 [file_edit] </span>
+      <div class="body">
+      <span class="ln summary">编辑文件: lex-cli/src/tui/draw.rs</span>
+      <span class="ln"> </span>
+      <span class="ln accent">文件: lex-cli/src/tui/draw.rs</span>
+      <span class="ln dim">  use ratatui::widgets::Paragraph;</span>
+      <span class="ln dim">  </span>
+      <span class="ln del">- use ratatui::widgets::Paragraph;</span>
+      <span class="ln add">+ use ratatui::widgets::{Paragraph, Wrap};</span>
+      <span class="ln dim">  </span>
+      <span class="ln dim">  f.render_widget(Paragraph::new(lines), inner);</span>
+      <span class="ln add">+ f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);</span>
+      </div>
+      <span class="ln keys">[y] 允许 <span class="sep">·</span> [n/Esc] 拒绝 <span class="sep">·</span> PgUp/PgDn 滚动 3/12</span>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+
+<!-- 画面三:/settings 设置页 -->
+<div class="scene" data-screen="3">
+<div class="label">画面三:/settings 设置页(模块 0 详情 · 字段编辑态,保存写回 lex-code.toml 并热生效)</div>
+<div class="screen">
+  <div class="settings">
+    <span class="ln dim">设置 <span class="accent">›</span> 模块 1/4</span>
+    <span class="ln set-head">模型与 Provider</span>
+    <span class="ln dim">provider / model / base_url 保存后立即重建 provider,热生效。</span>
+    <span class="ln" style="margin-top:6px"> </span>
+    <span class="field"><span class="k">  provider</span><span class="v">openai</span></span>
+    <span class="field sel"><span class="k">› model</span><span class="v">deepseek-chat</span></span>
+    <span class="field"><span class="k">  base_url</span><span class="v">https://api.deepseek.com</span></span>
+    <span class="field"><span class="k">  max_tokens</span><span class="v">8192</span></span>
+    <span class="field"><span class="k">  thinking(仅 openai,空=不发送)</span><span class="v">(空)</span></span>
+    <span class="field"><span class="k">  reasoning_effort(仅 openai,空=不发送)</span><span class="v">high</span></span>
+    <span class="ln set-note">↑↓ 选择字段 · Enter 进入编辑 · Esc 返回模块列表 · q 退出设置页</span>
+  </div>
+  <div class="input-box">
+    <span class="title"> 编辑 model(Enter 保存,Esc 取消) </span><span class="accent">› </span>deepseek-chat<span class="cursor">&nbsp;</span>
+  </div>
+  <div class="capacity">主输入已暂存,Esc 恢复</div>
+  <div class="status"><span>设置 · 编辑中</span><span>保存即写回 lex-code.toml</span></div>
+</div>
+</div>
+
+<script>
+  const s = new URLSearchParams(location.search).get('screen');
+  if (s) {
+    document.body.classList.add('shot');
+    document.querySelectorAll('.scene').forEach(el => {
+      if (el.dataset.screen !== s) el.style.display = 'none';
+    });
+  }
+</script>
+</body>
+</html>
