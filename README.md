@@ -9,7 +9,6 @@
 可插拔多 Provider(Anthropic 格式 + OpenAI 兼容格式)· DeepSeek 前缀缓存优化 · 三级权限沙盒
 
 ![Rust](https://img.shields.io/badge/Rust-stable-dea584?logo=rust&logoColor=white)
-![tests](https://img.shields.io/badge/tests-249%20passing-3fb950)
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)
 ![UI](https://img.shields.io/badge/UI-%E4%B8%AD%E6%96%87%E4%BC%98%E5%85%88-3b82f6)
 
@@ -61,7 +60,7 @@ Lex Code 把"给一个任务、看着它自己干活"的 agent 体验完整搬�
 
 ```bash
 cargo build --release -p lex-cli   # 产物:target/release/lex-code(.exe)
-cargo test --workspace             # 全量 249 个测试(含真实抓包/mock 回归)
+cargo test --workspace             # 全量测试(含真实抓包/mock 回归)
 ```
 
 运行时按以下顺序查找系统提示词文件 `assets/coding-agent-system-prompt.md`:配置 `system_prompt_path` → `<工作目录>/assets/` → `<可执行文件目录>/assets/`。对 release 二进制做冒烟时,需把该文件复制到 exe 旁。
@@ -207,7 +206,7 @@ LEX_LOG=debug lex-code ...   # 追加 agent 状态机转移
 ## 测试与开发
 
 ```bash
-cargo test --workspace        # 全部 249 个测试(含真实抓包/mock 回归)
+cargo test --workspace        # 全部测试(含真实抓包/mock 回归)
 cargo test -p lex-core        # 仅核心库
 ```
 
@@ -222,12 +221,6 @@ assets/          运行时系统提示词(外部资源,不硬编码进代码)
 docs/assets/     界面原型图(纯 SVG 自绘,无 foreignObject)、架构图与源文件(tui-prototype.html + 动效 SVG)
 examples/smoke/  真实 API 冒烟步骤与联调结论
 ```
-
-## 当前状态与路线图
-
-已完成:Phase 1 MVP 闭环(Anthropic 端点)→ Phase 2 Provider 泛化(DeepSeek 真实冒烟,缓存命中 97%)→ Phase 3 grep/todo、三级权限、只读并发 → Phase 4 AGENTS.md 注入、上下文压缩、前缀缓存遥测 → Phase 5 错误边界与可观测性 → Phase 6 子 agent 派生机制 + ratatui TUI → `/settings` 设置页全功能(REPL 只读 + TUI 编辑写回热生效)。
-
-明确不做:GUI / IDE 插件、多用户协作 / 服务化、CI/CD 集成。
 
 ## 许可证
 
