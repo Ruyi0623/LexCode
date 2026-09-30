@@ -375,6 +375,10 @@ fn draw_confirm(f: &mut Frame, app: &mut AppState) {
             lines.push(Line::from(Span::styled(format!("文件: {path}"), Style::default().fg(theme::C_ACCENT))));
             lines.extend(styled_diff_lines(&line_diff(old_string, new_string)));
         }
+        lex_core::security::PendingDetail::FileWrite { path, old_content, new_content } => {
+            lines.push(Line::from(Span::styled(format!("文件: {path}"), Style::default().fg(theme::C_ACCENT))));
+            lines.extend(styled_diff_lines(&line_diff(old_content, new_content)));
+        }
         lex_core::security::PendingDetail::Other => {}
     }
     // 底部留一行给提示;内容按折行后显示高度钳位滚动,长命令/大 diff 能看全
@@ -517,6 +521,43 @@ mod tests {
         assert!(screen.contains("- old"), "弹层应渲染删除行,实际:\n{screen}");
         assert!(screen.contains("+ new"), "弹层应渲染新增行,实际:\n{screen}");
         assert!(screen.contains("[y] 允许"), "应展示快捷键,实际:\n{screen}");
+    }
+
+    /// file_write 弹层:旧内容 vs 新内容整文件 diff(新建时旧内容为空 → 全量新增行)
+    #[test]
+    fn confirm_modal_renders_file_write_diff() {
+        let mut app = AppState::new();
+        app.open_confirm(PendingAction {
+            tool_name: "file_write".into(),
+            summary: "写入文件: b.rs".into(),
+            detail: PendingDetail::FileWrite {
+                path: "b.rs".into(),
+                old_content: "stale\n".into(),
+                new_content: "fresh\nlines\n".into(),
+            },
+        });
+        let screen = render(&mut app, 80, 24);
+        assert!(screen.contains("确认操作"), "应有弹层标题,实际:\n{screen}");
+        assert!(screen.contains("- stale"), "应显示被覆盖内容为删除行,实际:\n{screen}");
+        assert!(screen.contains("+ fresh") && screen.contains("+ lines"), "应显示新内容为新增行,实际:\n{screen}");
+    }
+
+    #[test]
+    fn confirm_modal_renders_file_write_as_all_adds_for_new_file() {
+        let mut app = AppState::new();
+        app.open_confirm(PendingAction {
+            tool_name: "file_write".into(),
+            summary: "写入文件: c.rs".into(),
+            detail: PendingDetail::FileWrite {
+                path: "c.rs".into(),
+                old_content: String::new(),
+                new_content: "brand new\n".into(),
+            },
+        });
+        let screen = render(&mut app, 80, 24);
+        assert!(screen.contains("+ brand new"), "新建文件应显示全量新增行,实际:\n{screen}");
+        // 删除行紧跟弹层左边框渲染("│- ...");状态栏"上下文 -"占位与 diff 无关,不在此列
+        assert!(!screen.contains("│- "), "不应有删除行,实际:\n{screen}");
     }
 
     #[test]

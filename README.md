@@ -23,8 +23,8 @@ Lex Code 把"给一个任务、看着它自己干活"的 agent 体验完整搬�
 
 - **可插拔双格式 Provider** — `anthropic` 与 `openai`(OpenAI 兼容)两套 adapter,均 SSE 流式;同一把 DeepSeek Key 对两种端点通用。429/500/503 自动退避重试,重试字节级一致(payload 预序列化),错误信息带错误码语义提示(401 认证失败 / 402 余额不足 / 429 限速…)。
 - **DeepSeek 前缀缓存优化** — 每轮请求对 system / tools / messages(逐条消息序列化)做字节级前缀比对,历史被改写等破坏缓存的情况记 warning 与遥测计数;命中率从响应 Usage 采集(`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`),终端每轮显示。实测命中率可达 97%。
-- **三级权限沙盒** — Auto / Confirm / Forbidden 逐级放行;删 `.git`、force push、敏感文件外发等高危操作硬拦截,**用户配置不可静默移除**;权限检查器内置于工具执行路径,上层(含子 agent)不可绕过。
-- **内置 6 个工具** — `file_read` / `file_edit`(保留原行尾,空 `old_string` 即新建文件)/ `bash_exec`(跨平台外壳)/ `grep_search`(内置 ignore+regex,不依赖外部 grep)/ `todo_write`(驱动待办面板)/ `spawn_subagent`(派生子 agent)。
+- **三级权限沙盒** — Auto / Confirm / Forbidden 逐级放行;删 `.git`、force push、敏感文件外发等高危操作硬拦截,**用户配置不可静默移除**;写入路径另有内置黑名单(`.git/` 内部、`lex-code.toml`),权限检查器内置于工具执行路径,上层(含子 agent)不可绕过。
+- **内置 7 个工具** — `file_read` / `file_edit`(最小化定位替换,保留原行尾,空 `old_string` 即新建/填充空文件)/ `file_write`(整文件写入:新建或整体覆盖,覆盖 CRLF 文件自动对齐行尾)/ `bash_exec`(跨平台外壳)/ `grep_search`(内置 ignore+regex,不依赖外部 grep)/ `todo_write`(驱动待办面板)/ `spawn_subagent`(派生子 agent)。
 - **子 agent 派生机制** — 子 agent 是独立上下文的完整 AgentLoop:权限继承父级、深度硬上限 2 层、每轮派生数量受配置预算约束,只把结构化摘要交回主对话。
 - **AGENTS.md 项目指引** — 会话启动时自动注入项目根 `AGENTS.md`,一次组装进缓存前缀后逐字节不变。
 - **上下文自动压缩** — 超过 `context.limit × 0.8` 触发一次历史摘要压缩(会话内仅一次,失败不消耗机会);也可用 `/compact` 手动触发,不受次数限制。
@@ -38,7 +38,7 @@ Lex Code 把"给一个任务、看着它自己干活"的 agent 体验完整搬�
 
 ![TUI 主界面](docs/assets/tui-main.svg)
 
-**权限确认弹层** — `file_edit` 展示带色 diff(增行绿 / 删行红),`bash_exec` 展示命令原文;禁止"是否继续?"式笼统确认:
+**权限确认弹层** — `file_edit` / `file_write` 展示带色 diff(增行绿 / 删行红),`bash_exec` 展示命令原文;禁止"是否继续?"式笼统确认:
 
 ![权限确认弹层](docs/assets/tui-confirm.svg)
 
@@ -161,10 +161,10 @@ API Key 环境变量:`LEX_ANTHROPIC_API_KEY` / `LEX_OPENAI_API_KEY`。
 每个有副作用的工具调用在执行前必经权限检查器,该路径不可被上层绕过;拦截/拒绝/失败都降级为错误 `ToolResult` 回填模型,不会中断会话。
 
 - **Auto**:只读工具(`file_read` / `grep_search` / `todo_write`)直接放行
-- **Confirm**:写文件、执行命令;需用户确认(弹层展示命令原文或 diff)
+- **Confirm**:写文件(`file_edit` / `file_write`)、执行命令;需用户确认(弹层展示命令原文或 diff)
 - **Forbidden**:硬拦截,不接受任何确认
 
-内置 Forbidden 默认规则:删除 `.git` 目录、`git push --force` 变体、`rm -rf` 高危目标、敏感文件(`.env`、`*.pem`、`id_rsa*` 等)读取后同轮出现网络外发命令(启发式)。内置规则用户配置**不可静默移除**;`[security]` 三段正则只能追加:
+内置 Forbidden 默认规则:删除 `.git` 目录、`git push --force` 变体、`rm -rf` 高危目标、敏感文件(`.env`、`*.pem`、`id_rsa*` 等)读取后同轮出现网络外发命令(启发式)。此外 `file_write` / `file_edit` 的写入路径另有内置黑名单(同样不可确认、不可移除):`.git/` 内部路径(大小写不敏感,不误伤 `.github` / `.gitignore`)与 `lex-code.toml`(产品配置只能走 `/settings` 写回);`file_read` 不受影响。内置规则用户配置**不可静默移除**;`[security]` 三段正则只能追加(正则同时作用于 bash 命令文本与文件路径,命中即生效):
 
 ```toml
 [security]

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 pub struct FileEdit;
 
-fn align_line_endings(text: &str, target_crlf: bool) -> String {
+pub(crate) fn align_line_endings(text: &str, target_crlf: bool) -> String {
     if target_crlf {
         text.replace("\r\n", "\n").replace('\n', "\r\n")
     } else {
@@ -16,7 +16,7 @@ fn align_line_endings(text: &str, target_crlf: bool) -> String {
 #[async_trait::async_trait]
 impl Tool for FileEdit {
     fn name(&self) -> &str { "file_edit" }
-    fn description(&self) -> &str { "以最小化定位替换修改文件:old_string 必须在文件中唯一命中;新建文件或写入空文件时 old_string 置空、new_string 传完整内容,不支持覆盖非空文件" }
+    fn description(&self) -> &str { "以最小化定位替换修改文件:old_string 必须在文件中唯一命中;新建文件或填充空文件时 old_string 置空、new_string 传完整内容;整体覆盖已有非空文件请改用 file_write" }
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -44,7 +44,7 @@ impl Tool for FileEdit {
                     .map_err(|e| LexError::Tool(format!("读取 {} 失败: {e}", path.display())))?;
                 if !existing.is_empty() {
                     return Err(LexError::Tool(format!(
-                        "空 old_string 仅支持新建文件或写入空文件;{} 已有内容({} 字节),请提供唯一的 old_string 做替换",
+                        "空 old_string 仅支持新建文件或填充空文件;{} 已有内容({} 字节),请用 file_write 整体覆盖,或提供唯一的 old_string 做替换",
                         path.display(),
                         existing.len()
                     )));
@@ -61,7 +61,7 @@ impl Tool for FileEdit {
         let content = std::fs::read_to_string(&path).map_err(|e| {
             if !path.exists() {
                 LexError::Tool(format!(
-                    "读取 {} 失败:文件不存在;新建文件请把 old_string 置空、new_string 传完整内容",
+                    "读取 {} 失败:文件不存在;新建请用 file_write,或置空 old_string、new_string 传完整内容",
                     path.display()
                 ))
             } else {

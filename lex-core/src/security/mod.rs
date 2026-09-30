@@ -7,17 +7,21 @@ use crate::message::Block;
 use crate::tools::{ToolContext, ToolRegistry};
 use async_trait::async_trait;
 use serde_json::Value;
+use std::path::Path;
 
 /// 结构化动作明细:TUI 权限弹层渲染 diff/命令原文用;纯文本模式只读 summary。
 #[derive(Debug, Clone, PartialEq)]
 pub enum PendingDetail {
     Bash { command: String },
     FileEdit { path: String, old_string: String, new_string: String },
+    FileWrite { path: String, old_content: String, new_content: String },
     Other,
 }
 
 /// 从工具调用输入提取结构化明细(bash 取命令原文,file_edit 取三段 diff 源)。
-pub fn detail_of(tool_name: &str, input: &Value) -> PendingDetail {
+/// file_write 的旧内容在这里读盘一次(每次确认只跑一次),TUI 渲染保持纯函数;
+/// 旧内容读不到(文件不存在/非 UTF-8)按空处理,弹层显示为全量新增。
+pub fn detail_of(tool_name: &str, input: &Value, cwd: &Path) -> PendingDetail {
     match tool_name {
         "bash_exec" => PendingDetail::Bash {
             command: input.get("command").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -27,6 +31,12 @@ pub fn detail_of(tool_name: &str, input: &Value) -> PendingDetail {
             old_string: input.get("old_string").and_then(Value::as_str).unwrap_or("").to_string(),
             new_string: input.get("new_string").and_then(Value::as_str).unwrap_or("").to_string(),
         },
+        "file_write" => {
+            let path = input.get("path").and_then(Value::as_str).unwrap_or("").to_string();
+            let new_content = input.get("content").and_then(Value::as_str).unwrap_or("").to_string();
+            let old_content = std::fs::read_to_string(cwd.join(&path)).unwrap_or_default();
+            PendingDetail::FileWrite { path, old_content, new_content }
+        }
         _ => PendingDetail::Other,
     }
 }
@@ -67,6 +77,11 @@ pub fn describe_call(name: &str, input: &Value) -> String {
             let new = input.get("new_string").and_then(Value::as_str).unwrap_or("");
             format!("编辑文件: {p}\n  - 替换前: {old}\n  - 替换后: {new}")
         }
+        "file_write" => {
+            let p = input.get("path").and_then(Value::as_str).unwrap_or("<未知路径>");
+            let content = input.get("content").and_then(Value::as_str).unwrap_or("");
+            format!("写入文件: {p}\n  - 新内容:\n{content}")
+        }
         "grep_search" => {
             let p = input.get("pattern").and_then(Value::as_str).unwrap_or("<未知模式>");
             format!("搜索内容: {p}")
@@ -81,12 +96,26 @@ pub fn describe_call(name: &str, input: &Value) -> String {
 }
 
 /// 规则匹配的判定主体:bash 取命令、文件类取路径,其余为空。
+/// 用户 [security] 的三级正则因此对 bash 命令与文件路径统一生效。
 fn decision_subject(tool_name: &str, input: &Value) -> String {
     match tool_name {
         "bash_exec" => input.get("command").and_then(Value::as_str).unwrap_or("").to_string(),
-        "file_read" | "file_edit" => input.get("path").and_then(Value::as_str).unwrap_or("").to_string(),
+        "file_read" | "file_edit" | "file_write" => input.get("path").and_then(Value::as_str).unwrap_or("").to_string(),
         _ => String::new(),
     }
+}
+
+/// 写入类工具(file_write / file_edit)在三级规则之外,额外过一道内置写入路径黑名单:
+/// 命令层的内置 Forbidden 规则匹配的是 bash 命令文本,纯路径不经过它们。
+/// 文件读取不经过此检查(读 .git 元信息无害);黑名单见 rules::default_forbidden_write_paths。
+fn builtin_write_path_block(guard: &SecurityGuard, tool_name: &str, input: &Value) -> Option<String> {
+    if !matches!(tool_name, "file_write" | "file_edit") {
+        return None;
+    }
+    input
+        .get("path")
+        .and_then(Value::as_str)
+        .and_then(|p| guard.forbidden_write_path(p))
 }
 
 /// 敏感文件读取记录:file_read / file_edit 都会触碰文件内容。
@@ -121,6 +150,14 @@ pub async fn execute_tool_call(
     };
 
     let subject = decision_subject(tool_name, &input);
+    if let Some(reason) = builtin_write_path_block(guard, tool_name, &input) {
+        tracing::warn!(tool_name, %reason, "写入路径被内置黑名单硬性拦截");
+        return Block::ToolResult {
+            tool_use_id: call_id.to_string(),
+            content: format!("⛔ 操作被安全规则硬性拦截(Forbidden):{reason}。该拦截不接受用户确认,请改用其他方案。"),
+            is_error: true,
+        };
+    }
     match guard.decide(&subject, tool.read_only()) {
         Decision::Forbidden { reason } => {
             tracing::warn!(tool_name, %reason, "工具调用被 Forbidden 规则硬性拦截");
@@ -135,7 +172,7 @@ pub async fn execute_tool_call(
             let action = PendingAction {
                 tool_name: tool_name.to_string(),
                 summary: describe_call(tool_name, &input),
-                detail: detail_of(tool_name, &input),
+                detail: detail_of(tool_name, &input, &ctx.cwd),
             };
             match handler.confirm(&action).await {
                 Ok(true) => {}
@@ -309,25 +346,61 @@ mod tests {
         assert!(s.contains("cargo test"));
         let s2 = describe_call("file_edit", &json!({"path":"a.rs","old_string":"x","new_string":"y"}));
         assert!(s2.contains("a.rs") && s2.contains("x") && s2.contains("y"));
-        let s3 = describe_call("mystery", &json!({"k":1}));
-        assert!(s3.contains("k"));
+        let s3 = describe_call("file_write", &json!({"path":"b.rs","content":"hi\n"}));
+        assert!(s3.contains("b.rs") && s3.contains("hi"), "实际: {s3}");
+        let s4 = describe_call("mystery", &json!({"k":1}));
+        assert!(s4.contains("k"));
     }
 
     // —— PendingDetail:TUI 权限弹层的结构化明细(TDD)——
 
     #[test]
     fn detail_of_extracts_bash_and_file_edit() {
-        let d = detail_of("bash_exec", &json!({"command":"cargo test"}));
+        let cwd = PathBuf::from(".");
+        let d = detail_of("bash_exec", &json!({"command":"cargo test"}), &cwd);
         assert_eq!(d, PendingDetail::Bash { command: "cargo test".into() });
 
-        let d = detail_of("file_edit", &json!({"path":"a.rs","old_string":"x","new_string":"y"}));
+        let d = detail_of("file_edit", &json!({"path":"a.rs","old_string":"x","new_string":"y"}), &cwd);
         assert_eq!(
             d,
             PendingDetail::FileEdit { path: "a.rs".into(), old_string: "x".into(), new_string: "y".into() }
         );
 
-        assert_eq!(detail_of("grep_search", &json!({"pattern":"p"})), PendingDetail::Other);
-        assert_eq!(detail_of("todo_write", &json!({})), PendingDetail::Other);
+        assert_eq!(detail_of("grep_search", &json!({"pattern":"p"}), &cwd), PendingDetail::Other);
+        assert_eq!(detail_of("todo_write", &json!({}), &cwd), PendingDetail::Other);
+    }
+
+    /// file_write 明细携带旧内容(供弹层算 diff);文件不存在时旧内容为空
+    #[test]
+    fn detail_of_extracts_file_write_with_old_content() {
+        let dir = std::env::temp_dir().join("lex-sec-fwtest-detail");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("exists.txt"), "old line\n").unwrap();
+
+        let d = detail_of(
+            "file_write",
+            &json!({"path":"exists.txt","content":"new line\n"}),
+            &dir,
+        );
+        assert_eq!(
+            d,
+            PendingDetail::FileWrite {
+                path: "exists.txt".into(),
+                old_content: "old line\n".into(),
+                new_content: "new line\n".into(),
+            }
+        );
+
+        let d = detail_of("file_write", &json!({"path":"missing.txt","content":"x"}), &dir);
+        assert_eq!(
+            d,
+            PendingDetail::FileWrite {
+                path: "missing.txt".into(),
+                old_content: String::new(),
+                new_content: "x".into(),
+            }
+        );
     }
 
     /// 捕获型 handler:把收到的 PendingAction 存进共享槽(异步闭包经 Arc 写入,避免借用问题)
@@ -350,5 +423,72 @@ mod tests {
         let action = captured.lock().unwrap_or_else(|p| p.into_inner()).take();
         let action = action.unwrap_or_else(|| panic!("应捕获到 PendingAction"));
         assert_eq!(action.detail, PendingDetail::Other);
+    }
+
+    // —— 写入路径黑名单:file_write / file_edit 在确认之前被硬性拦截 ——
+
+    #[tokio::test]
+    async fn file_write_to_git_internal_is_forbidden_without_confirm() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(crate::tools::file_write::FileWrite));
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let handler = Capture(Arc::clone(&captured));
+        let block = execute_tool_call(
+            &reg, &handler, &ctx(), &guard(), "t10", "file_write",
+            json!({"path":".git/config","content":"evil"}),
+        ).await;
+        match block {
+            Block::ToolResult { content, is_error, .. } => {
+                assert!(is_error);
+                assert!(content.contains("硬性拦截"), "实际: {content}");
+                assert!(content.contains(".git 内部路径"), "应带规则名: {content}");
+            }
+            o => panic!("{o:?}"),
+        }
+        assert!(
+            captured.lock().unwrap_or_else(|p| p.into_inner()).is_none(),
+            "Forbidden 拦截不得触发用户确认"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_edit_to_config_file_is_forbidden() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(crate::tools::file_edit::FileEdit));
+        let block = execute_tool_call(
+            &reg, &Always, &ctx(), &guard(), "t11", "file_edit",
+            json!({"path":"lex-code.toml","old_string":"a","new_string":"b"}),
+        ).await;
+        match block {
+            Block::ToolResult { content, is_error, .. } => {
+                assert!(is_error);
+                assert!(content.contains("lex-code.toml 配置文件"), "应带规则名: {content}");
+            }
+            o => panic!("{o:?}"),
+        }
+    }
+
+    /// 正常路径的 file_write 不受黑名单影响,照常走 Confirm → 执行
+    #[tokio::test]
+    async fn file_write_normal_path_still_works() {
+        let dir = std::env::temp_dir().join("lex-sec-fwtest-normal");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(crate::tools::file_write::FileWrite));
+        let block = execute_tool_call(
+            &reg, &Always, 
+            &ToolContext { cwd: dir.clone(), shell: None, todos: Default::default(), spawner: None },
+            &guard(), "t12", "file_write",
+            json!({"path":"ok.txt","content":"fine"}),
+        ).await;
+        match block {
+            Block::ToolResult { content, is_error, .. } => {
+                assert!(!is_error, "实际: {content}");
+                assert!(content.contains("已创建") || content.contains("已覆盖"));
+            }
+            o => panic!("{o:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(dir.join("ok.txt")).unwrap(), "fine");
     }
 }

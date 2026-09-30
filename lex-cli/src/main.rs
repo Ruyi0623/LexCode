@@ -17,6 +17,7 @@ use lex_core::security::{SecurityGuard, SecurityRules};
 use lex_core::tools::bash_exec::BashExec;
 use lex_core::tools::file_edit::FileEdit;
 use lex_core::tools::file_read::FileRead;
+use lex_core::tools::file_write::FileWrite;
 use lex_core::tools::grep_search::GrepSearch;
 use lex_core::tools::todo_write::TodoWrite;
 use lex_core::tools::{ShellCommand, ToolContext, ToolRegistry};
@@ -127,6 +128,7 @@ fn build_loop(
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FileRead));
     registry.register(Box::new(FileEdit));
+    registry.register(Box::new(FileWrite));
     registry.register(Box::new(BashExec));
     registry.register(Box::new(GrepSearch));
     registry.register(Box::new(TodoWrite));

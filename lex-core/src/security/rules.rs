@@ -39,6 +39,18 @@ fn default_sensitive() -> Vec<String> {
     ]
 }
 
+/// 内置写入路径黑名单(作用于写入类工具 file_write / file_edit 的 path)。
+/// 命令层的内置 Forbidden 规则匹配的是 bash 命令文本,纯路径不经过它们;
+/// 文件级保护在此单独把守,用户配置不可移除。`.git` 大小写不敏感(Windows 路径即同名);
+/// 排除 `.github`、`.gitignore` 等前缀相似路径(其后必须跟分隔符或结束)。
+fn default_forbidden_write_paths() -> Vec<(&'static str, String)> {
+    vec![
+        (".git 内部路径", r#"(?i)(^|[/\\])\.git([/\\]|$)"#.to_string()),
+        // 产品自身配置文件:模型改配置只能走 /settings 写回通道,整文件覆盖会破坏未知字段
+        ("lex-code.toml 配置文件", r#"(?i)(^|[/\\])lex-code\.toml$"#.to_string()),
+    ]
+}
+
 /// 内置网络外发命令模式(敏感文件已读 + 出现该类命令 = 拦截)。
 fn default_network() -> String {
     r#"\b(curl|wget|scp|rsync|nc|ncat|netcat|ftp)\b"#.to_string()
@@ -56,6 +68,7 @@ fn compile(patterns: &[String], what: &str) -> Result<Vec<Regex>> {
 #[derive(Clone)]
 pub struct SecurityRules {
     forbidden: Vec<(&'static str, Regex)>,
+    forbidden_write_paths: Vec<(&'static str, Regex)>,
     confirm: Vec<Regex>,
     auto: Vec<Regex>,
     sensitive: Vec<Regex>,
@@ -78,8 +91,14 @@ impl SecurityRules {
             .map(|s| Regex::new(s).map_err(|e| LexError::Config(format!("内置敏感文件规则错误: {e}"))))
             .collect::<std::result::Result<_, _>>()
             .map_err(|e| LexError::Config(format!("内置敏感文件规则正则错误: {e}")))?;
+        let forbidden_write_paths: Vec<(&'static str, Regex)> = default_forbidden_write_paths()
+            .into_iter()
+            .map(|(name, src)| Regex::new(&src).map(|r| (name, r)))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| LexError::Config(format!("内置写入路径保护正则错误: {e}")))?;
         Ok(SecurityRules {
             forbidden,
+            forbidden_write_paths,
             confirm: compile(&cfg.confirm, "security.confirm")?,
             auto: compile(&cfg.auto, "security.auto")?,
             sensitive,
@@ -99,6 +118,7 @@ impl SecurityRules {
                 tracing::error!("内置安全规则编译失败(不可达): {e}");
                 SecurityRules {
                     forbidden: vec![],
+                    forbidden_write_paths: vec![],
                     confirm: vec![],
                     auto: vec![],
                     sensitive: vec![],
@@ -136,6 +156,14 @@ impl SecurityRules {
     /// 路径是否为敏感文件(供读取路径记录使用)。
     pub fn is_sensitive_path(&self, path: &str) -> bool {
         self.sensitive.iter().any(|re| re.is_match(path))
+    }
+
+    /// 写入路径黑名单:命中返回拦截原因(文件级 Forbidden,与命令层规则相互独立)。
+    pub fn forbidden_write_path(&self, path: &str) -> Option<String> {
+        self.forbidden_write_paths
+            .iter()
+            .find(|(_, re)| re.is_match(path))
+            .map(|(name, _)| format!("命中写入路径保护「{name}」"))
     }
 
     /// 只读统计:(forbidden, confirm, auto) 条数(设置页展示用,无行为影响)
@@ -181,6 +209,11 @@ impl SecurityGuard {
     pub fn decide(&self, subject: &str, read_only: bool) -> Decision {
         let sensitive_read = self.turn.lock().map(|t| t.sensitive_read).unwrap_or(false);
         self.rules.decide(subject, read_only, sensitive_read)
+    }
+
+    /// 写入路径黑名单(转发规则表;写入类工具在 decide 之前先过这道)。
+    pub fn forbidden_write_path(&self, path: &str) -> Option<String> {
+        self.rules.forbidden_write_path(path)
     }
 
     /// 只读统计(转发规则表;设置页展示用)
@@ -316,5 +349,51 @@ mod tests {
         };
         let custom = SecurityRules::build(&cfg).unwrap();
         assert_eq!(custom.rule_counts(), (4, 1, 1)); // 内置 3 + 用户 1
+    }
+
+    /// 内置写入路径黑名单:.git 内部(大小写不敏感)与 lex-code.toml,
+    /// 且不误伤 .github / .gitignore 等前缀相似路径
+    #[test]
+    fn forbidden_write_path_blacklist() {
+        let rules = SecurityRules::defaults();
+        for p in [
+            ".git",
+            ".git/config",
+            "repo/.git/HEAD",
+            "..\\.git\\hooks\\pre-commit",
+            "sub/.GIT/objects", // Windows 路径大小写不敏感,按同名拦截
+        ] {
+            assert!(rules.forbidden_write_path(p).is_some(), "应拦截写入: {p}");
+        }
+        for p in [
+            "lex-code.toml",
+            "./lex-code.toml",
+            "config/lex-code.toml",
+        ] {
+            assert!(rules.forbidden_write_path(p).is_some(), "应拦截写入: {p}");
+        }
+        for p in [
+            ".github/workflows/ci.yml",
+            ".gitignore",
+            ".gitattributes",
+            "widget.rs",
+            "git-notes.md",
+            "src/main.rs",
+        ] {
+            assert!(rules.forbidden_write_path(p).is_none(), "误伤: {p}");
+        }
+    }
+
+    /// 黑名单不受用户配置影响(不可静默移除),也不因用户追加而消失
+    #[test]
+    fn write_path_blacklist_survives_user_config() {
+        let cfg = SecurityConfig {
+            forbidden: vec![],
+            confirm: vec![],
+            auto: vec![r".*".into()], // 用户试图全放行
+        };
+        let rules = SecurityRules::build(&cfg).unwrap();
+        assert!(rules.forbidden_write_path(".git/config").is_some());
+        assert!(rules.forbidden_write_path("lex-code.toml").is_some());
     }
 }

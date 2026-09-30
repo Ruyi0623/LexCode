@@ -1,6 +1,7 @@
 pub mod bash_exec;
 pub mod file_edit;
 pub mod file_read;
+pub mod file_write;
 pub mod grep_search;
 pub mod spawn_subagent;
 pub mod todo_write;
