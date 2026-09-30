@@ -1,77 +1,52 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1012" height="660" viewBox="0 0 1012 660">
-  <title>Lex Code TUI 原型 — 权限确认弹层</title>
+<!--
+  TUI 原型图 · 权限确认弹层。纯 SVG 自绘(无 foreignObject——iOS 上它会破坏 <img> 引用时的缩放)。
+  弹层为绝对居中的黑底黄框 modal:宽 80% × 高 62%,与 tui/confirm.rs 的呈现一致。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1012 660" width="1012" height="660"
+     style="max-width:100%;height:auto" role="img" aria-labelledby="tui-confirm-title tui-confirm-desc">
+  <title id="tui-confirm-title">Lex Code TUI 原型 — 权限确认弹层</title>
+  <desc id="tui-confirm-desc">file_edit 的确认弹层:展示编辑文件名、带色 diff(增行绿 / 删行红)与按键提示,禁止"是否继续?"式笼统确认。</desc>
   <style><![CDATA[
-    .root { width: 1012px; height: 660px; background: transparent; padding: 10px; box-sizing: border-box; color: #c9d1d9;
-      font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Noto Sans Mono CJK SC", monospace;
-      font-size: 14px; line-height: 1.55; }
-    .screen { width: 992px; height: 640px; background: #0d1117; border: 1px solid #21262d;
-      border-radius: 8px; padding: 14px 12px 10px; box-sizing: border-box; position: relative;
-      display: flex; flex-direction: column; overflow: hidden; }
-    .cols { flex: 1; display: flex; min-height: 0; }
-    .panel { border: 1px solid #30363d; position: relative; padding: 10px 10px 6px; }
-    .panel .title { position: absolute; top: -11px; left: 8px; background: #0d1117; padding: 0 5px; }
-    .panel.todos { margin-left: 12px; width: 25%; }
-    .panel.chat { flex: 1; }
-    .ln { display: block; white-space: pre; }
-    .dim { color: #8b949e; }
-    .accent { color: #3b82f6; }
-    .green { color: #3fb950; }
-    .red { color: #f85149; }
-    .todo { display: block; white-space: nowrap; }
-    .input-box { margin-top: 10px; border: 1px solid #3b82f6; position: relative; padding: 5px 8px; min-height: 3.4em; }
-    .input-box .title { position: absolute; top: -11px; left: 8px; background: #0d1117; padding: 0 5px; }
-    .input-box.busy { border-color: #30363d; }
-    .capacity { color: #8b949e; margin-top: 5px; }
-    .status { color: #8b949e; margin-top: 5px; display: flex; justify-content: space-between; }
-    .pulse { animation: pulse 1.6s ease-in-out infinite alternate; }
-    @keyframes pulse { from { opacity: 1; } to { opacity: 0.45; } }
-    .overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; }
-    .modal { width: 80%; height: 62%; background: #000000; border: 1px solid #d29922; position: relative;
-      padding: 10px 14px; display: flex; flex-direction: column; }
-    .modal .title { position: absolute; top: -11px; left: 10px; background: #000000; padding: 0 5px; }
-    .modal .summary { color: #d29922; }
-    .modal .body { flex: 1; overflow: hidden; }
-    .keys { color: #8b949e; }
+    text { font-family: "Cascadia Mono", Consolas, Menlo, "DejaVu Sans Mono", "Noto Sans Mono CJK SC", "Microsoft YaHei", monospace; font-size: 14px; }
   ]]></style>
+
   <rect x="0.5" y="0.5" width="1011" height="659" rx="12" fill="#161b22" stroke="#21262d"/>
-  <foreignObject x="0" y="0" width="1012" height="660">
-    <div xmlns="http://www.w3.org/1999/xhtml" class="root">
-      <div class="screen">
-        <div class="cols">
-          <div class="panel chat">
-            <span class="title"> 对话 </span>
-            <span class="ln">好的,我先给正文加上折行,避免超宽内容被截断。</span>
-          </div>
-          <div class="panel todos">
-            <span class="title"> 待办 </span>
-            <span class="todo accent">◐ 正文按显示高度折行</span>
-          </div>
-        </div>
-        <div class="input-box busy">
-          <span class="title"> 输入(Enter 提交,Ctrl+C 中断/退出) </span><span class="accent">› </span>
-        </div>
-        <div class="capacity">上下文 9600/64000 tokens(15%)</div>
-        <div class="status"><span class="pulse">等待确认…</span><span>输入 5120 · 输出 386 · 缓存命中 4800</span></div>
-        <div class="overlay">
-          <div class="modal">
-            <span class="title"> 确认操作 [file_edit] </span>
-            <div class="body">
-              <span class="ln summary">编辑文件: lex-cli/src/tui/draw.rs</span>
-              <span class="ln"> </span>
-              <span class="ln accent">文件: lex-cli/src/tui/draw.rs</span>
-              <span class="ln dim">  use ratatui::widgets::Paragraph;</span>
-              <span class="ln dim">  </span>
-              <span class="ln red">- use ratatui::widgets::Paragraph;</span>
-              <span class="ln green">+ use ratatui::widgets::{Paragraph, Wrap};</span>
-              <span class="ln dim">  </span>
-              <span class="ln dim">  f.render_widget(Paragraph::new(lines), inner);</span>
-              <span class="ln green">+ f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);</span>
-            </div>
-            <span class="ln keys">[y] 允许 · [n/Esc] 拒绝 · PgUp/PgDn 滚动 3/12</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  </foreignObject>
+  <rect x="10.5" y="10.5" width="991" height="639" rx="8" fill="#0d1117" stroke="#21262d"/>
+
+  <!-- 下层:双栏 + 输入盒 + 容量行 + 状态行 -->
+  <rect x="24" y="25" width="714" height="275" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <rect x="34" y="16" width="46" height="18" fill="#0d1117"/>
+  <text x="39" y="30" fill="#c9d1d9" xml:space="preserve"> 对话 </text>
+  <text x="34" y="55" fill="#c9d1d9" xml:space="preserve">好的,我先给正文加上折行,避免超宽内容被截断。</text>
+
+  <rect x="750" y="25" width="240" height="275" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <rect x="760" y="16" width="46" height="18" fill="#0d1117"/>
+  <text x="765" y="30" fill="#c9d1d9" xml:space="preserve"> 待办 </text>
+  <text x="760" y="55" fill="#3b82f6" xml:space="preserve">◐ 正文按显示高度折行</text>
+
+  <rect x="24" y="310" width="966" height="54" rx="6" fill="none" stroke="#30363d"/>
+  <rect x="34" y="301" width="280" height="18" fill="#0d1117"/>
+  <text x="39" y="315" fill="#c9d1d9" xml:space="preserve"> 输入(Enter 提交,Ctrl+C 中断/退出) </text>
+  <text x="36" y="337" fill="#c9d1d9" xml:space="preserve"><tspan fill="#3b82f6" font-weight="700" textLength="17">› </tspan></text>
+
+  <text x="36" y="384" fill="#8b949e" xml:space="preserve">上下文 9600/64000 tokens(15%)</text>
+  <text x="36" y="406" fill="#8b949e" xml:space="preserve">等待确认…</text>
+  <text x="990" y="406" text-anchor="end" fill="#8b949e" xml:space="preserve">输入 5120 · 输出 386 · 缓存命中 4800</text>
+
+  <!-- 上层:确认弹层(黑底压住下层,黄边框) -->
+  <rect x="109.5" y="132" width="793" height="396" fill="#000000" stroke="#d29922"/>
+  <rect x="119.5" y="123" width="162" height="18" fill="#000000"/>
+  <text x="124.5" y="137" fill="#c9d1d9" xml:space="preserve"> 确认操作 [file_edit] </text>
+  <text x="124" y="157" fill="#d29922" xml:space="preserve">编辑文件: lex-cli/src/tui/draw.rs</text>
+  <text x="124" y="179" fill="#c9d1d9" xml:space="preserve"> </text>
+  <text x="124" y="201" fill="#3b82f6" xml:space="preserve">文件: lex-cli/src/tui/draw.rs</text>
+  <text x="124" y="223" fill="#8b949e" xml:space="preserve">  use ratatui::widgets::Paragraph;</text>
+  <text x="124" y="245" fill="#8b949e" xml:space="preserve">  </text>
+  <text x="124" y="267" fill="#f85149" xml:space="preserve">- use ratatui::widgets::Paragraph;</text>
+  <text x="124" y="289" fill="#3fb950" xml:space="preserve">+ use ratatui::widgets::{Paragraph, Wrap};</text>
+  <text x="124" y="311" fill="#8b949e" xml:space="preserve">  </text>
+  <text x="124" y="333" fill="#8b949e" xml:space="preserve">  f.render_widget(Paragraph::new(lines), inner);</text>
+  <text x="124" y="355" fill="#3fb950" xml:space="preserve">+ f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);</text>
+  <text x="124" y="508" fill="#8b949e" xml:space="preserve">[y] 允许 · [n/Esc] 拒绝 · PgUp/PgDn 滚动 3/12</text>
 </svg>

@@ -32,7 +32,7 @@ Lex Code 把"给一个任务、看着它自己干活"的 agent 体验完整搬�
 
 ## 界面预览
 
-以下为 TUI 界面原型图,以 SVG 内嵌 HTML 直接渲染(配色与文案对齐 `lex-cli/src/tui/` 实际渲染,输入光标在闪烁;交互源文件 [`docs/assets/tui-prototype.html`](docs/assets/tui-prototype.html))。
+以下为 TUI 界面原型图,**纯 SVG `text`/`rect` 自绘,不用 `foreignObject`** —— iOS / 微信 WebView 上 `foreignObject` 经 `<img>` 引用时不随 viewBox 缩放,图会被裁成"显示不全"。配色与文案对齐 `lex-cli/src/tui/` 实际渲染,光标闪烁由 SVG 内的 CSS 动画实现;交互源文件 [`docs/assets/tui-prototype.html`](docs/assets/tui-prototype.html)。
 
 **主界面** — 盒式字符 banner、markdown 对话渲染、待办面板三态图标(◉ 完成 / ◐ 进行中 / ○ 待办)、斜杠命令补全、上下文容量行与缓存命中状态:
 
@@ -219,7 +219,7 @@ cargo test -p lex-core        # 仅核心库
 lex-core/src/    核心库:message / provider / agent / tools / security / context / config / prompt
 lex-cli/src/     终端 UI:main / confirm / ui(theme/banner/input/markdown/events/settings) / tui(...)
 assets/          运行时系统提示词(外部资源,不硬编码进代码)
-docs/assets/     界面原型图、架构图与源文件(tui-prototype.html + 动效 SVG)
+docs/assets/     界面原型图(纯 SVG 自绘,无 foreignObject)、架构图与源文件(tui-prototype.html + 动效 SVG)
 examples/smoke/  真实 API 冒烟步骤与联调结论
 ```
 
